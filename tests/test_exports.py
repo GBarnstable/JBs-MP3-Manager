@@ -23,7 +23,7 @@ def test_combined_export_deduplicates_and_creates_new_folder(library):
     folder = library.root / "Exports" / "My mix"
     assert result["copied"] == 3
     assert result["errors"] == []
-    assert len(list(folder.glob("*.mp3"))) + len(list(folder.glob("*.MP3"))) == 3
+    assert sum(path.suffix.lower() == ".mp3" for path in folder.iterdir()) == 3
     assert result["destination"] == str(folder)
     again = execute_export(library, ExportRequest("files", "My mix", groups(library)))
     assert Path(again["destination"]).name == "My mix (2)"
