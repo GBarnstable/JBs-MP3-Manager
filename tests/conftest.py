@@ -30,6 +30,23 @@ def qapp(tmp_path_factory):
     gc.collect()
 
 
+@pytest.fixture(autouse=True)
+def dispose_test_windows(request):
+    yield
+    if "qapp" not in request.fixturenames:
+        return
+    import shiboken6
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    # close() only hides a widget. Signal closures can retain those hidden windows
+    # until interpreter shutdown; dispose them while their QApplication is alive.
+    for widget in QApplication.topLevelWidgets():
+        if shiboken6.isValid(widget):
+            widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture(scope="session")
 def tones(tmp_path_factory):
     folder = tmp_path_factory.mktemp("generated-audio")
