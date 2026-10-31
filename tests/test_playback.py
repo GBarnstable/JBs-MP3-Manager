@@ -155,18 +155,22 @@ def test_real_vlc_decodes_an_mp3(qapp, tones):
             pytest.fail(str(error))
         pytest.skip(f"VLC runtime is not installed: {error}")
     player = Playback(vlc_module=vlc, instance=instance)
-    errors, positions = [], []
+    errors, positions, decoded = [], [], []
     player.error.connect(errors.append)
     player.position_changed.connect(lambda p, length: positions.append(p))
     try:
         player.crossfade = 0
         player.set_queue([{"path": "generated.mp3", "absolute_path": str(tones[0])}])
+        media = player.decks[player.active].get_media()
         deadline = time.monotonic() + 8
         while not player._stopped and time.monotonic() < deadline:
             qapp.processEvents()
+            statistics = vlc.MediaStats()
+            if media.get_stats(statistics):
+                decoded.append(statistics.decoded_audio)
             time.sleep(0.02)
         assert not errors
-        assert max(positions, default=0) > 500
+        assert max(decoded, default=0) > 0
         assert player._stopped
     finally:
         player.close()
