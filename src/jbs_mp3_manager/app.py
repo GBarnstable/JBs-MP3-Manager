@@ -213,14 +213,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.central)
         layout.setContentsMargins(22, 16, 22, 16)
         layout.setSpacing(12)
-        top = QHBoxLayout()
+        self.header = QWidget()
+        top = QHBoxLayout(self.header)
+        top.setContentsMargins(0, 0, 0, 0)
         title = QLabel("JB's MP3 Manager")
         title.setObjectName("title")
         top.addWidget(title)
         top.addStretch()
         top.addWidget(self.button("Create library…", self.create_library, True))
         top.addWidget(self.button("Open library…", self.choose_library))
-        layout.addLayout(top)
+        layout.addWidget(self.header)
         self.library_label = QLabel("One music folder. As many categories as you need.")
         self.library_label.setObjectName("muted")
         self.library_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -239,6 +241,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.tools)
 
         splitter = QSplitter()
+        self.browser = splitter
         side = QWidget()
         sidebar = QVBoxLayout(side)
         sidebar.setContentsMargins(0, 0, 8, 0)
@@ -579,7 +582,8 @@ class MainWindow(QMainWindow):
         if self.busy or not self.library:
             return
         self.busy = True
-        self.central.setEnabled(False)
+        for widget in (self.header, self.tools, self.browser):
+            widget.setEnabled(False)
         self.menuBar().setEnabled(False)
         self.progress.show()
         worker = Worker(self.library.root, operation)
@@ -594,7 +598,8 @@ class MainWindow(QMainWindow):
 
     def end_job(self):
         self.busy = False
-        self.central.setEnabled(True)
+        for widget in (self.header, self.tools, self.browser):
+            widget.setEnabled(True)
         self.menuBar().setEnabled(True)
         self.progress.hide()
         self.refresh()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import struct
 import tempfile
@@ -85,6 +86,15 @@ def write_tags(path: Path, values: dict[str, str], backup_dir: Path) -> None:
     tags.save(original)
     with tempfile.NamedTemporaryFile(dir=backup_dir, suffix=".id3", delete=False) as backup:
         backup.write(original.getvalue())
+        backup_path = Path(backup.name)
+    try:
+        relative = path.relative_to(backup_dir.parent.parent).as_posix()
+    except ValueError:
+        relative = path.name
+    backup_path.with_suffix(".json").write_text(
+        json.dumps({"song_path": relative, "id3_snapshot": backup_path.name}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     for field, frame in replacements.items():
         tags.delall(FRAMES[field].__name__)
         if frame is not None:

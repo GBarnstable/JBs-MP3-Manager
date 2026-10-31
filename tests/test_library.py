@@ -148,6 +148,21 @@ def test_unique_renames_preserve_song_id_and_categories(library):
     assert library.song(song["id"])["path"] == "Renamed.mp3"
 
 
+def test_ambiguous_rename_does_not_guess_memberships(library):
+    song = library.songs()[0]
+    category = library.add_category("Do not guess")
+    library.assign([song["id"]], [category])
+    data = library.path(song).read_bytes()
+    library.path(song).unlink()
+    (library.root / "Copy one.mp3").write_bytes(data)
+    (library.root / "Copy two.mp3").write_bytes(data)
+    report = library.scan()
+    assert report["renamed"] == 0
+    assert report["added"] == 2
+    assert library.song(song["id"])["missing"] == 1
+    assert not library.songs(category)
+
+
 def test_audio_replacement_does_not_inherit_categories(library, tones):
     song = next(s for s in library.songs() if s["path"] == "Alpha.mp3")
     category = library.add_category("Original")
