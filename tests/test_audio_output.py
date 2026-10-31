@@ -47,7 +47,7 @@ def test_real_equalizer_preserves_level_and_reset_restores_pcm(qapp, tones, real
 
     def rms(gains):
         player.stop()
-        samples.clear()
+        del samples[:]
         player.set_equalizer(gains)
         player.set_queue([{"path": "test.mp3", "absolute_path": str(tones[0])}])
         deadline = time.monotonic() + 8
@@ -71,7 +71,7 @@ def test_real_equalizer_preserves_level_and_reset_restores_pcm(qapp, tones, real
         player.close()
 
 
-def test_real_crossfade_has_two_playing_decoders_with_positive_gains(qapp, tmp_path, real_vlc):
+def test_real_crossfade_runs_decoders_concurrently(qapp, tmp_path, real_vlc):
     binary = shutil.which("ffmpeg")
     if not binary:
         import imageio_ffmpeg
@@ -100,25 +100,43 @@ def test_real_crossfade_has_two_playing_decoders_with_positive_gains(qapp, tmp_p
     vlc, instance = real_vlc
     player = Playback(vlc_module=vlc, instance=instance)
     player.crossfade = 1.5
-    errors, overlaps = [], []
+    gains = [0, 0]
+    apply_gain = player._gain
+
+    def observe_gain(index, gain):
+        gains[index] = gain
+        apply_gain(index, gain)
+
+    player._gain = observe_gain
+    errors, overlaps, trace = [], [], []
     player.error.connect(errors.append)
     try:
         player.set_queue([{"path": path.name, "absolute_path": str(path)} for path in paths])
         deadline = time.monotonic() + 10
         while not player._stopped and time.monotonic() < deadline:
             qapp.processEvents()
+            trace.append(
+                {
+                    "states": [str(d.get_state()) for d in player.decks],
+                    "positions": [d.get_time() for d in player.decks],
+                    "volumes": [d.audio_get_volume() for d in player.decks],
+                    "fade": player.fade,
+                    "prepared": player.prepared,
+                    "index": player.index,
+                }
+            )
             if (
                 player.fade
                 and player.fade[2] is not None
                 and all(deck.get_state() == vlc.State.Playing for deck in player.decks)
-                and all(deck.audio_get_volume() > 0 for deck in player.decks)
+                and all(gain > 0 for gain in gains)
             ):
                 overlaps.append(time.monotonic())
                 if overlaps[-1] - overlaps[0] > 0.35:
                     break
             time.sleep(0.01)
         assert not errors
-        assert overlaps and overlaps[-1] - overlaps[0] > 0.3
+        assert overlaps and overlaps[-1] - overlaps[0] > 0.3, trace[::10]
         assert player.index == 1
     finally:
         player.close()
