@@ -11,7 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 @pytest.fixture(scope="session")
 def qapp(tmp_path_factory):
-    from PySide6.QtCore import QSettings
+    import gc
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QSettings
     from PySide6.QtWidgets import QApplication
 
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
@@ -20,6 +22,12 @@ def qapp(tmp_path_factory):
     )
     application = QApplication.instance() or QApplication([])
     yield application
+    application.closeAllWindows()
+    # Collect Qt/Python signal closures while the native application still exists.
+    gc.collect()
+    application.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    gc.collect()
 
 
 @pytest.fixture(scope="session")

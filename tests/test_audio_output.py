@@ -139,4 +139,5 @@ def test_real_crossfade_runs_decoders_concurrently(qapp, tmp_path, real_vlc):
         assert overlaps and overlaps[-1] - overlaps[0] > 0.3, trace[::10]
         assert player.index == 1
     finally:
+        del player._gain  # Drop the probe closure/bound-method cycle before QApplication teardown.
         player.close()
