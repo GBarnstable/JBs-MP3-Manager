@@ -14,8 +14,9 @@
 - Drop new MP3s into the master folder. They appear in Untagged after detection or a manual **Rescan**. Choose one or more songs and **Categorize**. Check categories and choose Add or Remove. A song with no memberships returns to Untagged automatically.
 - Create categories with **+ Category**. Rename/delete the category selected in the sidebar. Deleting a category leaves the songs in place.
 - Select songs and choose **Edit metadata**. Only checked fields are written. A checked blank value clears a field. A batch edit starts with no fields checked.
-- Double-click a song to play it and queue the current visible song list in its sorted order, beginning at that song. Enable Shuffle before starting a new list. Crossfade 0 disables crossfading. Speed and equalizer affect playback, not the files.
-- **Export playlist** and **Export MP3s** use selected songs; if none are selected, they use the full visible list. To export a whole category, select the category, clear the search, and click **Clear selection**. MP3 file exports go to a destination outside the master music folder and include their own portable playlist.
+- Highlight one or more songs and click **Play selection** to queue only those songs, including when Shuffle is enabled. With no highlights, **Play view** queues the visible list. **Play category** (or double-clicking a song) queues the whole category, beginning at the highlighted song. Enable Shuffle before starting a new list. Crossfade 0 disables overlap; other values set the overlap in seconds. The next decoder is prepared before the outgoing song fades. Speed and equalizer affect playback, not the files. **Reset to flat** bypasses the equalizer and restores the original level.
+- **Export playlist** and **Export MP3s** first ask what to export. Choose **A category**, **Choose songs from the current category** (check individual songs), or **Multiple categories**. The category option defaults to the current category and always exports the whole category, regardless of the currently playing or highlighted song. Multiple categories can be combined with each song once, or exported separately with the correct category names. A song shared by two categories is intentionally copied into both when exporting separate folders.
+- Enter a playlist or **New folder name** in the dialog. Playlists go under `<music folder>/Exports/Playlists`; MP3 copies go under `<music folder>/Exports/<new folder>`. Folders are created automatically. Separate categories get their own named subfolders/playlists inside the named export. Repeated exports get a new name rather than overwriting old ones. MP3 exports include a playlist of the exported copies. Exports is excluded from all library scans, even recursive scans, so copies never become new Untagged songs.
 - Use **Library → Back up category database** to make a consistent SQLite snapshot. This backs up categories and the metadata cache, not the MP3 files themselves.
 
 # Moving from D: to C: and mirroring with FreeFileSync
@@ -28,3 +29,9 @@
 6. Run the mirror with the manager closed. SQLite uses a single main database with a rollback journal, and closing the app gives FreeFileSync a consistent complete folder to copy. Do not run the C: and D: copies as independently edited libraries and expect category changes to merge.
 
 Opening the mirrored folder directly also works if you later need to restore it. The application stores the last opened location in local desktop settings, but the library database contains relative paths.
+
+# Updating from 0.1
+
+Close the old app, extract the complete 0.2 download into a new application folder, and launch its EXE. It uses the same library database format and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. Your categories remain intact; you do not need the old category-copy folders or another import. Keep the whole `_internal` folder with the new EXE.
+
+If Windows SmartScreen appears for this unsigned new build, click **More info** to reveal **Run anyway** when you intend to run your downloaded build.

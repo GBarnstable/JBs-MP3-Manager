@@ -2,7 +2,7 @@
 
 A local Windows desktop application for one master MP3 folder and any number of virtual categories. A song can belong to several categories without making extra copies.
 
-**Version 0.1 is an initial version for testing with a copy of your library before the first real migration.** It does not delete MP3s or old category folders. See [QUICK_START.md](QUICK_START.md) for the first import and the D: → C: move.
+**Version 0.2** adds explicit category/song export choices, a scan-excluded `Exports` folder, selection-only playback, prepared two-deck crossfades, and corrected equalizer levels. Existing 0.1 libraries open directly and keep their categories. See [QUICK_START.md](QUICK_START.md) for importing a library and moving D: → C:.
 
 ## Included
 
@@ -11,9 +11,9 @@ A local Windows desktop application for one master MP3 folder and any number of 
 - Many-to-many categories; create, rename, delete, batch add, and batch remove memberships. Untagged automatically shows songs with no categories.
 - Search, sortable song table, metadata inspection, and single/batch editing of title, artist, album, genre, year, and track. Original ID3 tags are backed up; extra frames and artwork are preserved. Writes use a temporary file and atomic replacement.
 - Scan at startup, react to master-folder changes, and rescan every minute while running. Optional recursive master scan. Incomplete/unreadable files retry on subsequent scans. Missing songs retain their memberships. Unique same-audio renames preserve song identity.
-- Built-in VLC playback with a queue derived from the visible song list, shuffle, repeat, two-deck crossfade (0–12 seconds), 10-band EQ, volume, seeking, and speed (0.5×–2×). VLC's tempo filter is enabled for speed changes.
+- Built-in VLC playback from the highlighted selection or the category, shuffle, repeat, prepared two-deck crossfade (0–12 seconds), 10-band EQ, volume, seeking, and speed (0.5×–2×). The Windows engine uses independent DirectSound buffer volumes, compensates VLC's volume taper during fades, and prepares the next decoder before fading the current song. VLC's tempo filter is enabled for speed changes. EQ compensates VLC's fixed 12 dB attenuation, and Reset to flat removes the filter completely.
 - UTF-8 M3U8 playlists with relative paths where possible; absolute fallback across Windows drives.
-- Export selected songs or the visible category/search list to another folder, with collision-safe names, an accompanying playlist, and an export manifest. Originals stay in the master folder.
+- Explicit export dialogs choose a category, individual songs, or several categories. Combine categories with each song once or export one playlist/folder per category. Playlists default to `Exports/Playlists`; new MP3 export folders are created under `Exports`, with an accompanying playlist and manifest. Repeat exports use new names, and the entire Exports tree is excluded from scans, including recursive scans. Originals stay in the master folder.
 - Duplicate-audio reporting, full verification scan, database backup, and protection against opening the same library twice in the desktop app.
 
 ## Known limits
@@ -30,7 +30,7 @@ A local Windows desktop application for one master MP3 folder and any number of 
 
 ## Windows download
 
-Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-Windows** artifact. Extract the artifact, then extract the inner ZIP. Open `JBs-MP3-Manager.exe` inside the extracted application folder. Keep its `_internal` folder beside the EXE.
+Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.2.0-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
 
 The CI package includes the 64-bit VLC runtime, so Python and a separate VLC installation are not needed. The application is unsigned; Windows may show its normal unknown-publisher prompt. Windows 10/11, 64-bit, is the target. Automated build/decoding checks cannot replace listening and migration tests on your own computer.
 
@@ -61,6 +61,6 @@ Build a portable Windows folder and ZIP on Windows:
 .\.venv\Scripts\python.exe -m jbs_mp3_manager --smoke-test
 ```
 
-Tests generate their own synthetic MP3s with FFmpeg (system FFmpeg or the development dependency `imageio-ffmpeg`). No personal music files are in this repository. The real VLC decoding test skips if VLC is unavailable; CI sets `JBS_REQUIRE_VLC=1` so missing VLC fails the build. Playback transition tests use a controlled fake audio engine. UI tests use Qt's offscreen platform.
+Tests generate their own synthetic MP3s with FFmpeg (system FFmpeg or the development dependency `imageio-ffmpeg`). No personal music files are in this repository. Real VLC checks cover decoding, concurrently playing crossfade decks, and PCM level before/after EQ and reset. They skip if VLC is unavailable; CI sets `JBS_REQUIRE_VLC=1` so missing VLC fails the build. Additional playback transition tests use a controlled fake engine to simulate delayed startup. Export tests verify explicit selections, multiple-category layouts, deduplication, new folders, and recursive scan exclusion. UI tests use Qt's offscreen platform.
 
 The code separates MP3 inspection (`media.py`), portable library operations (`library.py`), audio playback (`playback.py`), and desktop views (`app.py`, `dialogs.py`). File operations run on a background worker so the event loop and playback timer remain responsive.

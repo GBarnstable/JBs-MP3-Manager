@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jbs_mp3_manager.playback import Playback
+from jbs_mp3_manager.playback import EQ_UNITY_PREAMP, Playback, instance_options
 
 
 class FakeDeck:
@@ -60,18 +60,40 @@ class FakeInstance:
         return FakeDeck()
 
     def media_new_path(self, path):
-        return SimpleNamespace(release=lambda: None)
+        return SimpleNamespace(release=lambda: None, add_option=lambda option: None)
 
     def release(self):
         pass
+
+
+class FakeEqualizer:
+    def __init__(self):
+        self.bands = [0] * 10
+        self.released = False
+
+    def set_preamp(self, value):
+        self.preamp = value
+
+    def set_amp_at_index(self, value, index):
+        self.bands[index] = value
+
+    def release(self):
+        self.released = True
 
 
 @pytest.fixture
 def playback(qapp):
     vlc = SimpleNamespace(
         State=SimpleNamespace(
-            Error="Error", Opening="Opening", Buffering="Buffering", NothingSpecial="Nothing", Ended="Ended"
-        )
+            Error="Error",
+            Opening="Opening",
+            Buffering="Buffering",
+            NothingSpecial="Nothing",
+            Ended="Ended",
+            Paused="Paused",
+            Playing="Playing",
+        ),
+        AudioEqualizer=FakeEqualizer,
     )
     player = Playback(vlc_module=vlc, instance=FakeInstance())
     player.set_queue([{"id": str(n), "path": f"{n}.mp3", "absolute_path": f"/{n}.mp3"} for n in range(3)])
@@ -138,6 +160,68 @@ def test_shuffle_keeps_selected_song_first(playback):
     playback.set_queue(tracks, 2)
     assert playback.queue[0]["id"] == "2"
     assert {s["id"] for s in playback.queue} == {"0", "1", "2"}
+
+
+def test_prepares_next_song_early_but_does_not_fade_current_song(playback):
+    playback.decks[0].position = 5500
+    playback.tick()
+    assert playback.prepared["ready"]
+    assert playback.decks[1].state == "Paused"
+    assert playback.decks[1].position == 0
+    assert playback.fade is None
+    assert playback.active == 0
+    assert playback.decks[0].volume == 80
+
+
+def test_slow_incoming_decoder_does_not_fade_out_current_song(playback):
+    incoming = playback.decks[1]
+
+    def delayed_play():
+        incoming.state = "Opening"
+        return 0
+
+    incoming.play = delayed_play
+    playback.decks[0].position = 8000
+    playback.tick()
+    assert playback.fade is None
+    assert playback.active == 0
+    assert playback.decks[0].volume == 80
+    incoming.state = "Paused"
+    incoming.set_pause = lambda value: setattr(incoming, "state", "Paused" if value else "Buffering")
+    playback.tick()
+    assert playback.fade[2] is None
+    assert playback.decks[0].volume == 80
+    incoming.state = "Playing"
+    playback.tick()
+    assert playback.fade[2] is not None
+    assert playback.active == 1
+    playback.fade[2] -= playback.fade[3] / 2
+    playback.tick()
+    assert all(0 < deck.volume < 80 for deck in playback.decks)
+    # Undoing VLC's volume taper keeps the sum of the decks' signal powers near unity.
+    assert sum((deck.volume / 80) ** 6 for deck in playback.decks) == pytest.approx(1, abs=0.04)
+
+
+def test_equalizer_compensates_vlc_attenuation_and_flat_disables_filter(playback):
+    gains = [0] * 10
+    gains[-1] = -1
+    playback.set_equalizer(gains)
+    equalizer = playback.equalizer
+    assert equalizer.preamp == pytest.approx(EQ_UNITY_PREAMP)
+    assert equalizer.preamp == pytest.approx(12.0412, abs=0.001)
+    assert playback.volume == 80
+    playback.set_equalizer([0] * 10)
+    assert playback.equalizer is None
+    assert equalizer.released
+    assert all(deck.eq is None for deck in playback.decks)
+    playback.next()
+    assert playback.decks[playback.active].eq is None
+    assert playback.decks[playback.active].volume == 80
+
+
+def test_windows_uses_independent_output_buffer_volumes():
+    assert "--aout=directsound" in instance_options("win32")
+    assert "--no-volume-save" in instance_options("win32")
 
 
 def test_real_vlc_decodes_an_mp3(qapp, tones):

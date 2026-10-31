@@ -14,6 +14,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .exports import EXPORT_DIR
 from .media import FIELDS, inspect_mp3, write_tags
 
 DATA_DIR = ".jbs-mp3-manager"
@@ -232,7 +233,8 @@ class Library:
         )
 
     def scan(self, progress=lambda message: None, *, verify: bool = False) -> dict:
-        files = mp3_files(self.root, self.setting("recursive", False))
+        excluded = [p for p in self.root.iterdir() if p.name.casefold() == EXPORT_DIR.casefold()]
+        files = mp3_files(self.root, self.setting("recursive", False), excluded=excluded)
         existing = {row["path"]: dict(row) for row in self.db.execute("SELECT * FROM songs")}
         seen = {p.relative_to(self.root).as_posix() for p in files}
         absent = [s for p, s in existing.items() if p not in seen]
@@ -320,6 +322,8 @@ class Library:
         used_names = set()
         for folder in folders:
             source = Path(folder).resolve(strict=True)
+            if source.is_relative_to(self.root / EXPORT_DIR):
+                raise ValueError("Exports contains output copies and cannot be imported as a category.")
             if not source.is_dir() or source == self.root or self.root.is_relative_to(source):
                 raise ValueError("Select each category folder itself, not the master folder or its parent.")
             name = self.validate_category(source.name)
@@ -460,8 +464,10 @@ class Library:
         self, song_ids: list[str], destination: str | Path, progress=lambda message: None
     ) -> dict:
         destination = Path(destination).resolve()
-        if destination.is_relative_to(self.root):
-            raise ValueError("Choose an export folder outside the master music folder.")
+        if destination.is_relative_to(self.root) and not destination.is_relative_to(self.root / EXPORT_DIR):
+            raise ValueError(
+                "Choose a folder under the library's Exports folder, or outside the music folder."
+            )
         destination.mkdir(parents=True, exist_ok=True)
         result = {"copied": [], "errors": []}
         reserved = {p.name.casefold() for p in destination.iterdir()}
@@ -511,6 +517,13 @@ class Library:
                 destination / f"export-{token}.json", json.dumps(result, ensure_ascii=False, indent=2)
             )
         return result
+
+    def export_root(self) -> Path:
+        root = self.root / EXPORT_DIR
+        if root.is_symlink():
+            raise ValueError("The library's Exports folder cannot be a link to another folder.")
+        root.mkdir(exist_ok=True)
+        return root
 
     def backup(self, destination: str | Path) -> Path:
         destination = Path(destination).resolve()

@@ -50,7 +50,15 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .dialogs import CategoryDialog, EqualizerDialog, FolderDialog, ImportPreview, MetadataDialog
+from .dialogs import (
+    CategoryDialog,
+    EqualizerDialog,
+    ExportDialog,
+    FolderDialog,
+    ImportPreview,
+    MetadataDialog,
+)
+from .exports import execute_export
 from .library import DATA_DIR, Library
 from .playback import Playback
 
@@ -284,7 +292,7 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         for column, width in enumerate([220, 160, 170, 65, 180, 100]):
             self.table.setColumnWidth(column, width)
-        self.table.doubleClicked.connect(self.play_selected)
+        self.table.doubleClicked.connect(self.play_category)
         self.table.selectionModel().selectionChanged.connect(self.selection_changed)
         body.addWidget(self.table)
         self.detail = QLabel("Select a song to inspect its metadata. Double-click to play the visible list.")
@@ -318,7 +326,9 @@ class MainWindow(QMainWindow):
         audio = QHBoxLayout(self.audio_controls)
         audio.setContentsMargins(0, 0, 0, 0)
         audio.addWidget(self.button("Previous", lambda: self.playback.previous()))
-        audio.addWidget(self.button("Play", self.play_selected, True))
+        self.play_button = self.button("Play", self.play_selected, True)
+        audio.addWidget(self.play_button)
+        audio.addWidget(self.button("Play category", self.play_category))
         audio.addWidget(self.button("Pause / Resume", lambda: self.playback.toggle_pause()))
         audio.addWidget(self.button("Next", lambda: self.playback.next()))
         audio.addWidget(self.button("Stop", lambda: self.playback.stop()))
@@ -555,6 +565,8 @@ class MainWindow(QMainWindow):
 
     def selection_changed(self, *_):
         selected = self.selected_songs()
+        if hasattr(self, "play_button"):
+            self.play_button.setText("Play selection" if selected else "Play view")
         if len(selected) == 1:
             song = selected[0]
             self.detail.setText(
@@ -575,7 +587,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self.detail.setText(
-                "Select songs to categorize or edit. Exports use your selection, or the full visible list."
+                "Play uses highlighted songs. Play category uses the category. Exports let you choose songs or categories."
             )
 
     def run_job(self, operation, completed=None, *, quiet=False):
@@ -748,34 +760,33 @@ class MainWindow(QMainWindow):
                 lambda result: self.show_report("Metadata update", result),
             )
 
-    def export_selection(self):
-        return self.selected_songs() or self.visible_songs()
-
     def export_playlist(self):
-        songs = self.export_selection()
-        if not self.library or not songs:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export playlist", "playlist.m3u8", "UTF-8 playlist (*.m3u8)"
-        )
-        if path:
-            self.run_job(
-                lambda lib, progress: str(lib.export_playlist([s["id"] for s in songs], path)),
-                lambda result: self.statusBar().showMessage(f"Playlist saved: {result}"),
-            )
+        self.choose_export("playlist")
 
     def export_files(self):
-        songs = self.export_selection()
-        if not self.library or not songs:
+        self.choose_export("files")
+
+    def choose_export(self, kind):
+        if not self.library or self.busy:
             return
-        path = QFileDialog.getExistingDirectory(self, f"Export {len(songs)} song(s) to folder")
-        if path:
-            self.run_job(
-                lambda lib, progress: lib.export_files([s["id"] for s in songs], path, progress),
-                lambda result: self.show_report(
-                    "MP3 export", {"copied": len(result["copied"]), "errors": result["errors"]}
-                ),
-            )
+        dialog = ExportDialog(self.library, self.current_category, self.selected_songs(), kind, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            request = dialog.request()
+            self.run_job(lambda lib, progress: execute_export(lib, request, progress), self.export_completed)
+
+    def export_completed(self, result):
+        box = QMessageBox(self)
+        box.setWindowTitle("Export complete")
+        box.setText(
+            f"MP3 copies: {result['copied']} · Playlists: {len(result['playlists'])} · "
+            f"Errors: {len(result['errors'])}\n\nSaved to: {result['destination']}"
+        )
+        box.setDetailedText(json.dumps(result, ensure_ascii=False, indent=2))
+        open_folder = box.addButton("Open export folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() == open_folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(result["destination"]))
 
     def backup(self):
         if not self.library:
@@ -815,9 +826,15 @@ class MainWindow(QMainWindow):
         box.exec()
 
     def play_selected(self, *_):
+        self.start_playback(self.selected_songs() or self.visible_songs())
+
+    def play_category(self, *_):
+        if self.library:
+            self.start_playback(self.library.songs(self.current_category))
+
+    def start_playback(self, songs):
         if not self.playback or not self.library:
             return
-        songs = self.visible_songs()
         if not songs:
             return
         selected = self.selected_songs()
@@ -855,7 +872,7 @@ class MainWindow(QMainWindow):
             ".jbs-mp3-manager, then choose Open library at the new location. "
             "Mirror C: → D: with FreeFileSync while the app is closed.\n\n"
             "Playback uses VLC 3.x. Speed control uses VLC's tempo filter. "
-            "Independent pitch shifting is not available in version 0.1.\n\n"
+            "Independent pitch shifting is not available in this version.\n\n"
             "New files are detected while running and on startup. Re-encoded audio "
             "requires manual review during category import.",
         )
