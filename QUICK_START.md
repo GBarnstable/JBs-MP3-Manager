@@ -19,6 +19,18 @@
 - Enter a playlist or **New folder name** in the dialog. Playlists go under `<music folder>/Exports/Playlists`; MP3 copies go under `<music folder>/Exports/<new folder>`. Folders are created automatically. Separate categories get their own named subfolders/playlists inside the named export. Repeated exports get a new name rather than overwriting old ones. MP3 exports include a playlist of the exported copies. Exports is excluded from all library scans, even recursive scans, so copies never become new Untagged songs.
 - Use **Library → Back up category database** to make a consistent SQLite snapshot. This backs up categories and the metadata cache, not the MP3 files themselves.
 
+# Resolve ambiguous imports and duplicate masters (0.3)
+
+1. Open your existing library and click **Review issues…** beside Rescan, or **Library → Review import issues / duplicates**. After a new import, **Review unresolved issues** opens the same screen.
+2. The latest completed import report loads automatically. If needed, click **Choose another import report** and select its `import-….json` file. The **Import issues** tab lists each unresolved copy, all candidate filenames, and any previous resolution.
+3. In **Duplicates**, choose **File to keep** for each group you want to merge. Leave a group on **Skip** to leave it alone. Click a row to compare metadata and see the complete combined category list. The chosen file's filename and tags remain unchanged.
+4. Check the summary, then click **Back up & merge selected groups**. The app verifies the selected files' encoded audio, backs up the database, archives extra MP3s, transfers all existing memberships, and applies pending categories from the saved report. It does not need to read the original category copies or repeat the full import.
+5. The refreshed review shows resolved counts and remaining groups. Redundant library records are removed, so archived duplicates do not appear in Missing files. The original import report remains a historical snapshot; current resolution status lives in the library database.
+
+The merge creates `.jbs-mp3-manager/duplicate-backups/<batch>/library-before.sqlite3`, `manifest.json`, and `files/0001.mp3` etc. **Open duplicate backups** opens that location. The manifest maps the numbered files to their original relative filenames and records the kept copy and categories. Keep the backups until you have checked the results; they consume disk space until you remove them. Do not restore an old database over newer library work without reviewing what changed afterward. If an operation is interrupted before its database commit, the app restores its moved files on the next open before scanning.
+
+Unmatched or unreadable report entries remain visible with their error details. Add/correct the relevant master file and rescan; if its audio matches the report, a single available master can be selected to apply the pending category without reimporting the folders.
+
 # Moving from D: to C: and mirroring with FreeFileSync
 
 1. Close the app and any other application modifying the music files.
@@ -30,8 +42,8 @@
 
 Opening the mirrored folder directly also works if you later need to restore it. The application stores the last opened location in local desktop settings, but the library database contains relative paths.
 
-# Updating from 0.1
+# Updating from 0.1 or 0.2
 
-Close the old app, extract the complete 0.2 download into a new application folder, and launch its EXE. It uses the same library database format and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. Your categories remain intact; you do not need the old category-copy folders or another import. Keep the whole `_internal` folder with the new EXE.
+Close the old app, extract the complete 0.3 download into a new application folder, and launch its EXE. It preserves the existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. For unresolved duplicate imports, use **Review issues**; you do not need another folder import. Keep the whole `_internal` folder with the new EXE.
 
 If Windows SmartScreen appears for this unsigned new build, click **More info** to reveal **Run anyway** when you intend to run your downloaded build.

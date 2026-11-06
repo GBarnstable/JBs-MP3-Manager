@@ -100,6 +100,14 @@ class Library:
                 PRIMARY KEY (song_id, category_id)
             );
             CREATE INDEX IF NOT EXISTS song_audio ON songs(audio_sha256);
+            CREATE TABLE IF NOT EXISTS import_resolutions (
+                report_hash TEXT NOT NULL, entry_index INTEGER NOT NULL,
+                song_id TEXT NOT NULL, keeper_path TEXT NOT NULL, batch_id TEXT NOT NULL,
+                PRIMARY KEY (report_hash, entry_index)
+            );
+            CREATE TABLE IF NOT EXISTS duplicate_batches (
+                id TEXT PRIMARY KEY, manifest TEXT NOT NULL
+            );
             PRAGMA user_version=1;
         """)
         with self.db:
@@ -395,6 +403,7 @@ class Library:
             safe_to_remove_sources=not unresolved,
         )
         report_path = self.save_report(report, "import")
+        self.set_setting("last_import_report", report_path.name)
         return {**report, "report_path": str(report_path)}
 
     def save_report(self, report: dict, prefix: str) -> Path:
@@ -404,11 +413,16 @@ class Library:
         if "entries" in report:
             output = io.StringIO(newline="")
             writer = csv.DictWriter(
-                output, fieldnames=["category", "source", "status", "master", "error"], extrasaction="ignore"
+                output,
+                fieldnames=["category", "source", "status", "master", "candidates", "error"],
+                extrasaction="ignore",
             )
             writer.writeheader()
             # Protect spreadsheet applications from interpreting names as formulas.
-            for entry in report["entries"]:
+            for original in report["entries"]:
+                entry = dict(original)
+                if isinstance(entry.get("candidates"), list):
+                    entry["candidates"] = "; ".join(entry["candidates"])
                 writer.writerow(
                     {
                         k: ("'" + str(v) if str(v).startswith(("=", "+", "-", "@")) else v)

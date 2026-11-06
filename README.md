@@ -2,7 +2,7 @@
 
 A local Windows desktop application for one master MP3 folder and any number of virtual categories. A song can belong to several categories without making extra copies.
 
-**Version 0.2** adds explicit category/song export choices, a scan-excluded `Exports` folder, selection-only playback, prepared two-deck crossfades, and corrected equalizer levels. Existing 0.1 libraries open directly and keep their categories. See [QUICK_START.md](QUICK_START.md) for importing a library and moving D: → C:.
+**Version 0.3** adds an in-app import-issue and duplicate review screen. Choose a master file to keep, merge its categories and pending assignments from a saved report, and archive the extra copies with automatic database backup and interrupted-operation recovery. Existing 0.1/0.2 libraries open directly and keep their categories. See [QUICK_START.md](QUICK_START.md) for the guided duplicate workflow and moving D: → C:.
 
 ## Included
 
@@ -15,11 +15,13 @@ A local Windows desktop application for one master MP3 folder and any number of 
 - UTF-8 M3U8 playlists with relative paths where possible; absolute fallback across Windows drives.
 - Explicit export dialogs choose a category, individual songs, or several categories. Combine categories with each song once or export one playlist/folder per category. Playlists default to `Exports/Playlists`; new MP3 export folders are created under `Exports`, with an accompanying playlist and manifest. Repeat exports use new names, and the entire Exports tree is excluded from scans, including recursive scans. Originals stay in the master folder.
 - Duplicate-audio reporting, full verification scan, database backup, and protection against opening the same library twice in the desktop app.
+- **Review issues** shows duplicate groups, complete candidate filenames/metadata, and unresolved/resolved import entries. Each keeper must be explicitly chosen. Merging preserves the keeper's ID, filename, and MP3 tags; combines memberships from every copy and pending report row; archives extra files; and removes redundant database records without leaving Missing files. Saved import reports can resolve directly even if the original category folders are unavailable. Future CSV reports include candidate filenames too.
+- Merge backups live in `.jbs-mp3-manager/duplicate-backups/<batch>`: a complete pre-merge SQLite snapshot, byte-preserving numbered MP3 archives, and a manifest mapping their original filenames. An unfinished file move is rolled back before the next startup scan; a committed database ledger prevents incorrectly undoing a completed merge. Backups are excluded from scanning and travel with the library.
 
 ## Known limits
 
 - Independent musical pitch/key shifting is not implemented. Tempo processing and crossfade quality still need listening tests on the target Windows PC.
-- MP3 only. Category matching does not use acoustic fingerprints: re-encoded files, different edits, or different recordings of the same song require review. No automatic deletion or merging of duplicate masters.
+- MP3 only. Category matching does not use acoustic fingerprints: re-encoded files, different edits, or different recordings of the same song require review. Duplicate masters merge only after you select the keeper; extra files are archived, never permanently deleted by the merge.
 - On import, each selected folder becomes one category, including MP3s in its descendants. Categories are flat and independent of the MP3 genre tag. Reserved view names cannot be used as categories; rename such source folders before importing them.
 - The monitor runs while the application is open. Startup scans catch files added while it was closed. Recursive subfolder changes are caught by the periodic scan.
 - A quick scan checks size and modification time. Use **Library → Verify all files** to detect changes that deliberately preserve both.
@@ -30,7 +32,7 @@ A local Windows desktop application for one master MP3 folder and any number of 
 
 ## Windows download
 
-Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.2.0-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
+Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.3.0-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
 
 The CI package includes the 64-bit VLC runtime, so Python and a separate VLC installation are not needed. The application is unsigned; Windows may show its normal unknown-publisher prompt. Windows 10/11, 64-bit, is the target. Automated build/decoding checks cannot replace listening and migration tests on your own computer.
 

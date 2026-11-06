@@ -58,9 +58,13 @@ from .dialogs import (
     ImportPreview,
     MetadataDialog,
 )
+from .duplicates import merge as merge_duplicates
+from .duplicates import recover_pending
+from .duplicates import review as duplicate_review
 from .exports import execute_export
 from .library import DATA_DIR, Library
 from .playback import Playback
+from .review_dialog import ReviewDialog
 
 STYLE = """
 QWidget { font-family: 'Segoe UI', 'DejaVu Sans'; font-size: 13px; color: #24354a; }
@@ -240,6 +244,7 @@ class MainWindow(QMainWindow):
         tools.setContentsMargins(0, 0, 0, 0)
         tools.addWidget(self.button("Import category folders…", self.import_categories))
         tools.addWidget(self.button("Rescan", self.scan))
+        tools.addWidget(self.button("Review issues…", self.review_issues))
         tools.addStretch()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search title, artist, album, or filename…")
@@ -398,6 +403,7 @@ class MainWindow(QMainWindow):
             ("Rescan", self.scan, "F5", True),
             ("Verify all files…", self.verify, "", True),
             ("Import category folders…", self.import_categories, "", True),
+            ("Review import issues / duplicates…", self.review_issues, "", True),
             ("Back up category database…", self.backup, "", True),
             ("Open reports folder", self.open_reports, "", True),
             ("Open music folder", self.open_music_folder, "", True),
@@ -466,9 +472,13 @@ class MainWindow(QMainWindow):
             lock.setStaleLockTime(0)
             if not lock.tryLock(0):
                 raise ValueError("This library is already open in another instance. Close that window first.")
+            library = None
             try:
                 library = Library(root, create=create, recursive=recursive)
+                recover_pending(library)
             except Exception:
+                if library:
+                    library.close()
                 lock.unlock()
                 raise
             if self.playback:
@@ -741,9 +751,62 @@ class MainWindow(QMainWindow):
                 )
                 + f"Report: {report['report_path']}"
             )
-            QMessageBox.information(self, "Category import complete", message)
+            box = QMessageBox(self)
+            box.setWindowTitle("Category import complete")
+            box.setText(message)
+            review_button = None
+            if report["unresolved_files"]:
+                review_button = box.addButton("Review unresolved issues…", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Ok)
+            box.exec()
+            if review_button and box.clickedButton() == review_button:
+                self.review_issues(report_path=report["report_path"], rescan=False)
 
         self.run_job(preview, reviewed)
+
+    def review_issues(self, checked=False, *, report_path=None, rescan=True):
+        if not self.library or self.busy:
+            return
+
+        def load(library, progress):
+            recover_pending(library)
+            if rescan:
+                library.scan(progress)
+            return duplicate_review(library, report_path)
+
+        def loaded(snapshot):
+            dialog = ReviewDialog(snapshot, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            if dialog.action == "load":
+                self.review_issues(report_path=dialog.chosen_report, rescan=False)
+                return
+            choices = dialog.choices()
+            if self.playback:
+                self.playback.stop()
+                for deck in self.playback.decks:
+                    deck.set_media(None)
+            self.run_job(
+                lambda library, progress: merge_duplicates(library, snapshot, choices, progress), finished
+            )
+
+        def finished(result):
+            message = (
+                f"Merged {result['groups_merged']} duplicate groups.\n"
+                f"Archived {result['files_archived']} files and removed {result['records_removed']} "
+                "redundant library records.\n"
+                f"Resolved {result['issues_resolved']} import entries; "
+                f"{result['remaining_issues']} remain.\n\n"
+                f"Database backup, archived MP3s, and recovery manifest:\n{result['backup_folder']}"
+            )
+            if result["audit_error"]:
+                message += (
+                    "\nThe final manifest could not be updated; the committed database records the merge."
+                )
+            QMessageBox.information(self, "Duplicate merge complete", message)
+            self.review_issues(report_path=result["report_path"], rescan=False)
+
+        self.run_job(load, loaded)
 
     def edit_metadata(self):
         songs = self.selected_songs()

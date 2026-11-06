@@ -58,7 +58,7 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Packaged app exited with code $($process.ExitCode)" }
       - uses: actions/upload-artifact@v4
         with:
-          name: JBs-MP3-Manager-0.2.0-Windows
+          name: JBs-MP3-Manager-0.3.0-Windows
           path: dist/JBs-MP3-Manager/
           if-no-files-found: error
           retention-days: 30
