@@ -29,9 +29,14 @@ def _restore(library, batch, manifest):
                 raise ValueError("Recovery will not remove a file that changed after interruption.")
             path.unlink()
     for move in reversed(manifest["moves"]):
-        original = _original_path(library, move["original"])
+        _original_path(library, move["original"])
+        original = library.root / move["original"]
         stage = _archive_path(batch, move["archive"])
-        target = _original_path(library, move["target"]) if move.get("target") else None
+        if move.get("target"):
+            _original_path(library, move["target"])
+            target = library.root / move["target"]
+        else:
+            target = None
         if not stage.exists() and original.exists():
             if digest_range(original) != move["sha256"]:
                 raise ValueError("An original file changed after interruption.")
@@ -145,7 +150,8 @@ def rename_independently(library, plans, progress=lambda message: None):
             library.db.execute("BEGIN IMMEDIATE")
             source = _original_path(library, move["original"])
             stage = _archive_path(batch, move["archive"])
-            target = _original_path(library, move["target"])
+            _original_path(library, move["target"])
+            target = library.root / move["target"]  # Preserve requested capitalization on Windows.
             if digest_range(source) != move["sha256"]:
                 raise ValueError("File changed since review; rescan and review it again.")
             atomic_text(active, json.dumps({"index": index}))

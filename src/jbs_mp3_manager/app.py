@@ -1103,7 +1103,7 @@ class MainWindow(QMainWindow):
     def show_report(self, title, report):
         box = QMessageBox(self)
         box.setWindowTitle(title)
-        if "renamed" in report:
+        if "renamed" in report and "report_path" in report:
             box.setText(
                 f"Renamed: {report['renamed']} · Already correct: {report.get('unchanged', 0)}"
                 f" · Failed / not attempted: {len(report.get('errors', []))}"
