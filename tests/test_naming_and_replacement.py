@@ -186,6 +186,13 @@ def test_select_all_handles_large_batches_without_approving_missing_names(qapp):
             "Earth, Wind & Fire--A Song.mp3",
             True,
         ),
+        (
+            "Alex Performer Jr.--A Song.mp3",
+            "Performer, Alex, Jr.",
+            "A Song",
+            "Performer, Alex, Jr.--A Song.mp3",
+            True,
+        ),
     ],
 )
 def test_filename_artist_order_uses_existing_name_evidence_and_flags_ambiguous_names(

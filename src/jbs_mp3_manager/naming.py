@@ -36,7 +36,7 @@ def change_reason(current, proposed):
     old, new = Path(current), Path(proposed)
     reasons = []
     new_artist, _ = filename_parts(proposed)
-    if possible_first_name_first(new_artist):
+    if "," in new_artist and new_artist.rsplit(",", 1)[1].strip().casefold() != "the":
         reasons.append("Artist name order: review comma name")
     if old.stem != new.stem:
         artist, title = filename_parts(current)
