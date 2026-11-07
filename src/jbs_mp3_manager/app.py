@@ -65,7 +65,7 @@ from .duplicates import review as duplicate_review
 from .exports import execute_export
 from .fingerprinting import apply_decisions, find_candidates, index_library
 from .library import DATA_DIR, Library
-from .naming import proposals, rename_files
+from .naming import build_proposals, mark_names_correct, rename_files, rename_marks
 from .playback import Playback
 from .review_dialog import ReviewDialog
 
@@ -734,15 +734,28 @@ class MainWindow(QMainWindow):
             elif scope == "Current category":
                 song_ids = [song["id"] for song in self.library.songs(self.current_category)]
 
-        def loaded(items):
-            if not items:
+        def loaded(context):
+            items = context["items"]
+            if not context["can_review"]:
                 if not auto_review:
                     QMessageBox.information(
                         self, "Filename review complete", "No proposed filename changes in this selection."
                     )
                 return
-            dialog = RenameDialog(items, self, auto_review=auto_review)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
+            dialog = RenameDialog(
+                items,
+                self,
+                auto_review=auto_review,
+                songs=context["songs"],
+                accepted=context["accepted"],
+                use_metadata=context["use_metadata"],
+                on_mark_correct=lambda songs, correct: mark_names_correct(self.library, songs, correct),
+            )
+            outcome = dialog.exec()
+            self.guarded(
+                lambda: self.library.set_setting("rename_use_metadata", dialog.use_metadata.isChecked())
+            )
+            if outcome == QDialog.DialogCode.Accepted:
                 approved = dialog.approved()
                 self.stop_for_file_changes()
                 self.run_job(
@@ -751,17 +764,32 @@ class MainWindow(QMainWindow):
                 )
 
         def prepare(library, progress):
-            items = proposals(library, song_ids)
+            songs = library.songs() if song_ids is None else [library.song(song_id) for song_id in song_ids]
+            accepted = rename_marks(library)
+            use_metadata = library.setting("rename_use_metadata", auto_review)
+            items = build_proposals(songs, use_metadata=use_metadata, accepted=accepted)
             if auto_review:
-                # Duplicate review already ran. Correctly named arrivals need no
-                # filename approval and must not remain in the pending inbox.
                 pending = {item["id"] for item in items}
                 unchanged = set(song_ids or ()) - pending
                 with library.db:
                     library.db.executemany(
                         "DELETE FROM new_arrivals WHERE song_id=?", [(song_id,) for song_id in unchanged]
                     )
-            return items
+            can_review = bool(items)
+            if not auto_review and not can_review:
+                can_review = bool(
+                    build_proposals(songs, use_metadata=not use_metadata, accepted=accepted)
+                    or build_proposals(
+                        songs, use_metadata=use_metadata, accepted=accepted, include_accepted=True
+                    )
+                )
+            return {
+                "songs": songs,
+                "accepted": accepted,
+                "items": items,
+                "use_metadata": use_metadata,
+                "can_review": can_review,
+            }
 
         self.run_job(prepare, loaded)
 

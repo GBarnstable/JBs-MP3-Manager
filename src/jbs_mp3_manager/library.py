@@ -115,6 +115,10 @@ class Library:
             CREATE TABLE IF NOT EXISTS new_arrivals (
                 song_id TEXT PRIMARY KEY REFERENCES songs(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS rename_acceptances (
+                song_id TEXT PRIMARY KEY REFERENCES songs(id) ON DELETE CASCADE,
+                path TEXT NOT NULL, audio_hash TEXT NOT NULL
+            );
         """)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(songs)")}
         for name, definition in [

@@ -103,8 +103,24 @@ def change_reason(current, proposed):
             if old_title.casefold() == new_title.casefold()
             else "Update song title"
         )
-    if old_artist and old_title and old.stem != old_artist + "--" + old_title:
-        reasons.append("Normalize artist/title separator" if "--" not in old.stem else "Remove extra spaces")
+    old_parts, new_parts = filename_components(current), filename_components(proposed)
+    if old_parts and new_parts:
+        if old_parts["separator"] != new_parts["separator"]:
+            reasons.append(
+                "Normalize artist/title separator" if "--" not in old.stem else "Remove extra spaces"
+            )
+        elif any(
+            (
+                old_parts[key][: len(old_parts[key]) - len(old_parts[key].lstrip())],
+                old_parts[key][len(old_parts[key].rstrip()) :],
+            )
+            != (
+                new_parts[key][: len(new_parts[key]) - len(new_parts[key].lstrip())],
+                new_parts[key][len(new_parts[key].rstrip()) :],
+            )
+            for key in ("artist", "title")
+        ):
+            reasons.append("Remove extra spaces")
     if old.stem != new.stem and not reasons:
         reasons.append("Update artist/title spelling or filename characters")
     if old.suffix != new.suffix:
@@ -143,44 +159,230 @@ def validate_name(name):
     return name
 
 
-def proposals(library, song_ids=None):
-    songs = library.songs() if song_ids is None else [library.song(song_id) for song_id in song_ids]
+RENAME_RULES = {
+    "artist_order": "Artist name order",
+    "the": "Move leading The to artist suffix",
+    "spacing": "Extra spaces",
+    "separator": "Artist/title separator",
+    "extension": "MP3 extension case",
+    "metadata_artist": "Artist spelling from metadata",
+    "metadata_title": "Song title from metadata",
+    "metadata_name": "Build filename from metadata",
+    "characters": "Filename characters / length",
+}
+
+
+def filename_components(filename):
+    """Keep every original character so a single rule can leave other details intact."""
+    path = Path(filename)
+    stem = path.stem
+    index = stem.find("--")
+    if index >= 0:
+        start, end = index, index + 2
+        while start and stem[start - 1].isspace():
+            start -= 1
+        while end < len(stem) and stem[end].isspace():
+            end += 1
+    else:
+        match = re.search(r"\s+-\s*-\s+|\s+[-–—]\s+", stem)
+        if not match:
+            return None
+        start, end = match.span()
+    return {
+        "artist": stem[:start],
+        "separator": stem[start:end],
+        "title": stem[end:],
+        "extension": path.suffix,
+    }
+
+
+def _join_components(parts):
+    return parts["artist"] + parts["separator"] + parts["title"] + parts["extension"]
+
+
+def _replace_content(original, content):
+    leading = original[: len(original) - len(original.lstrip())]
+    trailing = original[len(original.rstrip()) :]
+    return leading + content + trailing
+
+
+def _clean_component(value):
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value)
+
+
+def _metadata_artist(song, current):
+    metadata = song.get("artist", "").strip()
+    if not metadata:
+        return current.strip()
+    if current.strip():
+        if not comma_name_needs_review(current) and comma_name_needs_review(metadata):
+            return current.strip()
+        # A tag's display form must not undo the filename's The/order convention.
+        if filename_artist(metadata) == filename_artist(current.strip()):
+            return current.strip()
+
+        def without_article(value):
+            value = re.sub(r"(?i)^the\s+", "", value.strip())
+            return re.sub(r"(?i),\s*the$", "", value)
+
+        if without_article(metadata) == without_article(current):
+            return current.strip()
+    return metadata
+
+
+def rename_operations(song, *, use_metadata):
+    """Return independent previews, each changing exactly one kind of detail."""
+    original = Path(song["path"]).name
+    parts = filename_components(original)
+    operations = {}
+    original_path = Path(original)
+    if original_path.suffix != ".mp3":
+        operations["extension"] = original_path.stem + ".mp3"
+    cleaned = _clean_component(original_path.stem)[:220] + original_path.suffix
+    if cleaned != original:
+        operations["characters"] = cleaned
+    if parts is None or not parts["artist"].strip() or not parts["title"].strip():
+        if original_path.stem.strip() != original_path.stem:
+            operations["spacing"] = original_path.stem.strip() + original_path.suffix
+        if use_metadata:
+            fallback_artist, fallback_title = filename_parts(original)
+            name = suggested_name(
+                _metadata_artist(song, fallback_artist), song.get("title", "").strip() or fallback_title
+            )
+            if name and name != original:
+                operations["metadata_name"] = name
+        return operations
+
+    def propose(rule, field, value):
+        updated = {**parts, field: value}
+        name = _join_components(updated)
+        if name != original:
+            operations[rule] = name
+
+    artist = parts["artist"].strip()
+    natural = natural_person_name(artist)
+    if natural:
+        propose("artist_order", "artist", _replace_content(parts["artist"], natural))
+    if artist.casefold() != "the the" and re.match(r"(?i)^the\s+", artist):
+        moved = re.sub(r"(?i)^the\s+", "", artist).strip() + ", The"
+        propose("the", "artist", _replace_content(parts["artist"], moved))
+    compact_separator = "".join(parts["separator"].split())
+    spacing = {**parts, "artist": parts["artist"].strip(), "title": parts["title"].strip()}
+    if compact_separator == "--":
+        spacing["separator"] = "--"
+    if _join_components(spacing) != original:
+        operations["spacing"] = _join_components(spacing)
+    if compact_separator != "--":
+        leading = re.match(r"^\s*", parts["separator"]).group()
+        trailing = re.search(r"\s*$", parts["separator"]).group()
+        propose("separator", "separator", leading + "--" + trailing)
+    propose("extension", "extension", ".mp3")
+    if use_metadata:
+        metadata_artist = _metadata_artist(song, parts["artist"])
+        if metadata_artist and metadata_artist != artist:
+            propose(
+                "metadata_artist",
+                "artist",
+                _replace_content(parts["artist"], _clean_component(metadata_artist)),
+            )
+        metadata_title = song.get("title", "").strip()
+        if metadata_title and metadata_title != parts["title"].strip():
+            propose(
+                "metadata_title", "title", _replace_content(parts["title"], _clean_component(metadata_title))
+            )
+    cleaned = _clean_component(Path(original).stem)[:220] + parts["extension"]
+    if cleaned != original:
+        operations["characters"] = cleaned
+    return operations
+
+
+def rename_marks(library):
+    return {
+        row["song_id"]: {"path": row["path"], "audio_hash": row["audio_hash"]}
+        for row in library.db.execute("SELECT * FROM rename_acceptances")
+    }
+
+
+def mark_names_correct(library, songs, correct=True):
+    with library.db:
+        for reviewed in songs:
+            current = library.song(reviewed["id"])
+            if (current["path"], current["audio_sha256"]) != (reviewed["path"], reviewed["audio_sha256"]):
+                raise ValueError("A reviewed song changed; reopen rename review before marking it correct.")
+            if correct:
+                library.db.execute(
+                    "INSERT OR REPLACE INTO rename_acceptances VALUES (?, ?, ?)",
+                    (current["id"], current["path"], current["audio_sha256"]),
+                )
+                library.db.execute("DELETE FROM new_arrivals WHERE song_id=?", (current["id"],))
+            else:
+                library.db.execute("DELETE FROM rename_acceptances WHERE song_id=?", (current["id"],))
+    return rename_marks(library)
+
+
+def build_proposals(songs, *, use_metadata=True, reason=None, accepted=None, include_accepted=False):
+    accepted = accepted or {}
     result = []
     for song in songs:
-        if song["missing"]:
+        if song.get("missing"):
             continue
-        fallback_artist, fallback_title = filename_parts(song["path"])
-        artist = song["artist"].strip() or fallback_artist
-        retained_order = bool(
-            fallback_artist
-            and not comma_name_needs_review(fallback_artist)
-            and comma_name_needs_review(artist)
+        mark = accepted.get(song["id"])
+        is_accepted = bool(
+            mark and mark["path"] == song["path"] and mark["audio_hash"] == song.get("audio_sha256", "")
         )
-        if retained_order:
-            artist = fallback_artist
-        artist = filename_artist(artist)
-        title = song["title"].strip() or fallback_title
-        name = suggested_name(artist, title)
-        if name == Path(song["path"]).name:
+        if is_accepted and not include_accepted:
             continue
+        operations = rename_operations(song, use_metadata=use_metadata)
+        fallback_artist, fallback_title = filename_parts(song["path"])
+        artist = _metadata_artist(song, fallback_artist) if use_metadata else fallback_artist
+        title = (song.get("title", "").strip() or fallback_title) if use_metadata else fallback_title
+        full_name = suggested_name(artist, title)
+        if reason is not None:
+            if reason not in operations:
+                continue
+            else:
+                name = operations[reason]
+        else:
+            name = full_name
+        if is_accepted and not name:
+            name = Path(song["path"]).name
+        if name == Path(song["path"]).name and not is_accepted:
+            continue
+        if not operations and name and not is_accepted:
+            continue
+        proposed_artist, proposed_title = filename_parts(name) if name else (artist, title)
+        explanation = change_reason(song["path"], name) if reason is None else RENAME_RULES[reason] + " only"
+        if is_accepted:
+            explanation = "Marked correct; " + explanation
         result.append(
             {
                 **song,
-                "rename_artist": artist,
-                "rename_title": title,
+                "rename_artist": proposed_artist or artist,
+                "rename_title": proposed_title or title,
                 "proposed": name,
-                "reason": change_reason(song["path"], name),
-                "basis": (
-                    "Metadata"
-                    if song["artist"].strip() and song["title"].strip()
-                    else "Filename fallback / review needed"
-                )
-                + (
-                    "; artist retained from filename instead of comma-form metadata" if retained_order else ""
-                ),
+                "full_proposed": full_name,
+                "reason": explanation,
+                "reason_ids": list(operations),
+                "other_reasons": [RENAME_RULES[key] for key in operations if key != reason],
+                "only_reason": reason,
+                "accepted": is_accepted,
+                "basis": "Filename only"
+                if not use_metadata
+                else "Metadata where available; filename fallback",
             }
         )
     return result
+
+
+def proposals(library, song_ids=None, *, use_metadata=True, reason=None, include_accepted=False):
+    songs = library.songs() if song_ids is None else [library.song(song_id) for song_id in song_ids]
+    return build_proposals(
+        songs,
+        use_metadata=use_metadata,
+        reason=reason,
+        accepted=rename_marks(library),
+        include_accepted=include_accepted,
+    )
 
 
 def rename_files(library, approved, progress=lambda message: None):

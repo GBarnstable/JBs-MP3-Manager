@@ -20,13 +20,23 @@ from PySide6.QtWidgets import (
 )
 
 from .media import quality_text
-from .naming import change_reason, suggested_name, validate_name
+from .naming import (
+    RENAME_RULES,
+    _join_components,
+    _replace_content,
+    build_proposals,
+    change_reason,
+    filename_components,
+    suggested_name,
+    validate_name,
+)
 
 
 class RenameOneDialog(QDialog):
     def __init__(self, proposal, parent=None):
         super().__init__(parent)
         self.stop_review = False
+        self.proposal = proposal
         self.setWindowTitle("Approve song filename")
         self.resize(720, 290)
         layout = QVBoxLayout(self)
@@ -37,14 +47,22 @@ class RenameOneDialog(QDialog):
         form = QFormLayout()
         self.artist = QLineEdit(proposal["rename_artist"])
         self.title = QLineEdit(proposal["rename_title"])
+        only = proposal.get("only_reason")
+        if only:
+            self.artist.setEnabled(only in ("artist_order", "the", "metadata_artist", "metadata_name"))
+            self.title.setEnabled(only in ("metadata_title", "metadata_name"))
         self.filename = QLineEdit(proposal["proposed"])
         self.reason = QLabel()
         self.reason.setWordWrap(True)
         self.reason.setTextFormat(Qt.TextFormat.PlainText)
         self.filename.textChanged.connect(
-            lambda value: self.reason.setText(change_reason(proposal["path"], value))
+            lambda value: self.reason.setText(
+                proposal.get("reason", "")
+                if value == proposal["proposed"]
+                else "Custom filename edit: " + change_reason(proposal["path"], value)
+            )
         )
-        self.reason.setText(change_reason(proposal["path"], proposal["proposed"]))
+        self.reason.setText(proposal.get("reason") or change_reason(proposal["path"], proposal["proposed"]))
         form.addRow("Artist", self.artist)
         form.addRow("Song title", self.title)
         form.addRow("New filename", self.filename)
@@ -66,7 +84,16 @@ class RenameOneDialog(QDialog):
         layout.addLayout(buttons)
 
     def suggest(self, *_):
-        self.filename.setText(suggested_name(self.artist.text(), self.title.text()))
+        only = self.proposal.get("only_reason")
+        parts = filename_components(self.proposal["path"])
+        if only and parts:
+            if only in ("artist_order", "the", "metadata_artist"):
+                parts["artist"] = _replace_content(parts["artist"], self.artist.text().strip())
+            elif only == "metadata_title":
+                parts["title"] = _replace_content(parts["title"], self.title.text().strip())
+            self.filename.setText(_join_components(parts))
+        else:
+            self.filename.setText(suggested_name(self.artist.text(), self.title.text()))
 
     def stop(self):
         self.stop_review = True
@@ -86,22 +113,54 @@ class RenameOneDialog(QDialog):
 
 
 class RenameDialog(QDialog):
-    def __init__(self, proposals, parent=None, *, auto_review=False):
+    def __init__(
+        self,
+        proposals,
+        parent=None,
+        *,
+        auto_review=False,
+        songs=None,
+        accepted=None,
+        use_metadata=True,
+        on_mark_correct=None,
+    ):
         super().__init__(parent)
         self.proposals = proposals
         self.by_id = {proposal["id"]: proposal for proposal in proposals}
+        self.source_songs = songs if songs is not None else list(proposals)
+        self.accepted = dict(accepted or {})
+        self.on_mark_correct = on_mark_correct
+        self.setWindowFlags(
+            (self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
+        self.setSizeGripEnabled(True)
         self.setWindowTitle("Rename library files — review and approve")
-        self.resize(1080, 660)
+        self.resize(1200, 760)
         layout = QVBoxLayout(self)
         note = QLabel(
-            "Names use Artist/Title metadata first, then filenames with --, - -, or spaced dash separators. "
-            "Unchanged filenames are omitted. Only checked rows are renamed. "
-            "The reason column explains small changes such as .MP3 to .mp3 or extra spaces. "
-            "Click a column heading to sort. Artist name order has its own reason. "
-            "Categories and song IDs are preserved. Old playlists may need re-export after filenames change."
+            "Choose one reason to change only that detail, or choose all suggested changes. "
+            "Metadata is optional. Changing the reason or metadata option rebuilds proposals and clears approvals/edits. "
+            "Mark correct saves an exception for the current filename immediately. "
+            "Only approved rows are renamed; categories and song IDs are preserved."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        options = QHBoxLayout()
+        options.addWidget(QLabel("Reason to apply"))
+        self.reason_combo = QComboBox()
+        self.reason_combo.addItem("All suggested changes", None)
+        for key, label in RENAME_RULES.items():
+            self.reason_combo.addItem(label + " only", key)
+        options.addWidget(self.reason_combo, 1)
+        self.use_metadata = QCheckBox("Use Artist/Title metadata")
+        self.use_metadata.setChecked(use_metadata)
+        options.addWidget(self.use_metadata)
+        self.show_correct = QCheckBox("Show marked correct")
+        options.addWidget(self.show_correct)
+        self.show_missing = QCheckBox("Show files needing details")
+        options.addWidget(self.show_missing)
+        layout.addLayout(options)
         self.summary = QLabel()
         layout.addWidget(self.summary)
         self.table = QTableWidget(len(proposals), 4)
@@ -150,6 +209,9 @@ class RenameDialog(QDialog):
         self.unapprove_selected_button.clicked.connect(lambda: self.set_selected_approval(False))
         group_actions.addWidget(self.approve_selected_button)
         group_actions.addWidget(self.unapprove_selected_button)
+        self.mark_correct_button = QPushButton("Mark selected correct")
+        self.mark_correct_button.clicked.connect(self.mark_selected_correct)
+        group_actions.addWidget(self.mark_correct_button)
         layout.addLayout(group_actions)
         actions = QHBoxLayout()
         for label, action in [
@@ -168,6 +230,7 @@ class RenameDialog(QDialog):
             QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel
         )
         self.box.button(QDialogButtonBox.StandardButton.Apply).setText("Rename approved files")
+        self.box.button(QDialogButtonBox.StandardButton.Cancel).setText("Close")
         self.box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.accept)
         self.box.rejected.connect(self.reject)
         layout.addWidget(self.box)
@@ -175,6 +238,14 @@ class RenameDialog(QDialog):
         self.table.itemChanged.connect(self.row_changed)
         self.table.selectionModel().selectionChanged.connect(self.update_selection)
         self.table.model().layoutChanged.connect(self.refresh_visibility)
+        for index in range(1, self.reason_combo.count()):
+            self.reason_combo.model().item(index).setEnabled(
+                self.use_metadata.isChecked() or not self.reason_combo.itemData(index).startswith("metadata_")
+            )
+        self.reason_combo.currentIndexChanged.connect(lambda: self.rebuild())
+        self.use_metadata.toggled.connect(lambda: self.rebuild())
+        self.show_correct.toggled.connect(lambda: self.rebuild(preserve=True))
+        self.show_missing.toggled.connect(self.refresh_visibility)
         self.table.setSortingEnabled(True)
         self.table.sortItems(3, Qt.SortOrder.AscendingOrder)
         self.update_summary()
@@ -183,12 +254,79 @@ class RenameDialog(QDialog):
             self.table.setCurrentCell(first, 1)
         else:
             self.detail.setPlainText(
-                "These files do not have enough artist/title information for a proposed filename. "
+                "No matching proposals. Change the metadata option or show marked-correct files to review exceptions."
+                if not self.table.rowCount()
+                else "These files do not have enough artist/title information for a proposed filename. "
                 "Choose Enter missing artist/title to review them. No filename is guessed."
             )
         if auto_review and proposals:
             QTimer.singleShot(0, self.review_one_by_one)
         self.update_selection()
+
+    def rebuild(self, *, preserve=False):
+        for index in range(1, self.reason_combo.count()):
+            rule = self.reason_combo.itemData(index)
+            self.reason_combo.model().item(index).setEnabled(
+                self.use_metadata.isChecked() or not rule.startswith("metadata_")
+            )
+        if not self.use_metadata.isChecked() and str(self.reason_combo.currentData()).startswith("metadata_"):
+            with QSignalBlocker(self.reason_combo):
+                self.reason_combo.setCurrentIndex(0)
+        previous = (
+            {
+                self.proposal_at(row)["id"]: (
+                    self.table.item(row, 2).text(),
+                    self.table.item(row, 0).checkState(),
+                )
+                for row in range(self.table.rowCount())
+            }
+            if preserve
+            else {}
+        )
+        items = build_proposals(
+            self.source_songs,
+            use_metadata=self.use_metadata.isChecked(),
+            reason=self.reason_combo.currentData(),
+            accepted=self.accepted,
+            include_accepted=self.show_correct.isChecked(),
+        )
+        with self.stable_rows(), QSignalBlocker(self.table), QSignalBlocker(self.table.selectionModel()):
+            self.proposals = items
+            self.by_id = {item["id"]: item for item in items}
+            self.table.clearContents()
+            self.table.setRowCount(len(items))
+            for row, proposal in enumerate(items):
+                check = QTableWidgetItem()
+                flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+                if not proposal.get("accepted"):
+                    flags |= Qt.ItemFlag.ItemIsUserCheckable
+                check.setFlags(flags)
+                check.setData(Qt.ItemDataRole.UserRole, proposal["id"])
+                name, state = previous.get(proposal["id"], (proposal["proposed"], Qt.CheckState.Unchecked))
+                if proposal.get("accepted"):
+                    state = Qt.CheckState.Unchecked
+                check.setCheckState(state)
+                self.table.setItem(row, 0, check)
+                reason_text = (
+                    proposal["reason"]
+                    if name == proposal["proposed"]
+                    else "Custom filename edit: " + change_reason(proposal["path"], name)
+                )
+                for column, value in enumerate([proposal["path"], name, reason_text], 1):
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(value)
+                    if column != 2 or proposal.get("accepted"):
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    self.table.setItem(row, column, item)
+        self.refresh_visibility()
+        self.update_summary()
+        first = next((row for row in range(self.table.rowCount()) if not self.table.isRowHidden(row)), None)
+        if first is not None:
+            self.table.setCurrentCell(first, 1)
+        else:
+            self.detail.setPlainText(
+                "No matching proposals. Change the reason or metadata option, or show marked-correct files to review exceptions."
+            )
 
     def proposal_at(self, row):
         return self.by_id[self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)]
@@ -206,7 +344,11 @@ class RenameDialog(QDialog):
 
     def refresh_visibility(self, *_):
         for row in range(self.table.rowCount()):
-            self.table.setRowHidden(row, not bool(self.table.item(row, 2).text().strip()))
+            item = self.table.item(row, 2)
+            if item is not None:
+                self.table.setRowHidden(
+                    row, not bool(item.text().strip()) and not self.show_missing.isChecked()
+                )
         self.show_details(self.table.currentRow())
         self.update_selection()
 
@@ -222,11 +364,40 @@ class RenameDialog(QDialog):
         self.selection_label.setText(f"{count:,} selected · Shift: range · Ctrl: separate rows")
         self.approve_selected_button.setEnabled(bool(count))
         self.unapprove_selected_button.setEnabled(bool(count))
+        self.mark_correct_button.setEnabled(bool(count))
+        all_correct = bool(count) and all(
+            self.proposal_at(row).get("accepted") for row in self.selected_rows()
+        )
+        self.mark_correct_button.setText("Review selected again" if all_correct else "Mark selected correct")
+
+    def mark_selected_correct(self):
+        items = [self.proposal_at(row) for row in self.selected_rows()]
+        if not items:
+            return
+        correct = not all(item.get("accepted") for item in items)
+        try:
+            if self.on_mark_correct:
+                self.accepted = self.on_mark_correct(items, correct)
+            else:
+                for item in items:
+                    if correct:
+                        self.accepted[item["id"]] = {
+                            "path": item["path"],
+                            "audio_hash": item.get("audio_sha256", ""),
+                        }
+                    else:
+                        self.accepted.pop(item["id"], None)
+        except Exception as error:
+            QMessageBox.warning(self, "Could not save correct-name marks", str(error))
+            return
+        self.rebuild(preserve=True)
 
     def set_selected_approval(self, approve):
         rows = self.selected_rows()
         with self.stable_rows(), QSignalBlocker(self.table):
             for row in rows:
+                if self.proposal_at(row).get("accepted"):
+                    continue
                 if approve:
                     try:
                         validate_name(self.table.item(row, 2).text())
@@ -239,10 +410,12 @@ class RenameDialog(QDialog):
 
     def update_summary(self):
         missing = sum(not self.table.item(row, 2).text().strip() for row in range(self.table.rowCount()))
+        marked = sum(bool(self.proposal_at(row).get("accepted")) for row in range(self.table.rowCount()))
         approved = len(self.approved())
         self.summary.setText(
-            f"{self.table.rowCount() - missing:,} proposed filenames \u00b7 {approved:,} approved \u00b7 "
-            f"{missing} {'needs' if missing == 1 else 'need'} artist/title details (not shown in the table)"
+            f"{self.table.rowCount() - missing - marked:,} proposed filenames \u00b7 {approved:,} approved \u00b7 "
+            f"{marked:,} marked correct shown \u00b7 "
+            f"{missing} {'needs' if missing == 1 else 'need'} artist/title details"
         )
         self.missing_button.setText(f"Enter missing artist/title ({missing})\u2026")
         self.missing_button.setEnabled(bool(missing))
@@ -254,11 +427,18 @@ class RenameDialog(QDialog):
         if item.column() == 2:
             with self.stable_rows(), QSignalBlocker(self.table):
                 row = item.row()
-                reason = change_reason(self.proposal_at(row)["path"], item.text().strip())
+                proposal = self.proposal_at(row)
+                reason = (
+                    proposal.get("reason", change_reason(proposal["path"], item.text().strip()))
+                    if item.text().strip() == proposal["proposed"]
+                    else "Custom filename edit: " + change_reason(proposal["path"], item.text().strip())
+                )
                 self.table.item(row, 3).setText(reason)
                 self.table.item(row, 3).setToolTip(reason)
                 self.table.item(row, 2).setToolTip(item.text())
-                self.table.setRowHidden(row, not bool(item.text().strip()))
+                self.table.setRowHidden(
+                    row, not bool(item.text().strip()) and not self.show_missing.isChecked()
+                )
                 if not item.text().strip():
                     self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
             self.show_details(item.row())
@@ -269,12 +449,21 @@ class RenameDialog(QDialog):
             return
         item = self.proposal_at(row)
         proposed = self.table.item(row, 2).text()
-        reason = change_reason(item["path"], proposed)
+        reason = self.table.item(row, 3).text()
         text = (
             f"Current: {item['path']}\nProposed: {proposed or '(needs artist/title details)'}\n"
             f"Change: {reason}\nSource: {item['basis']}"
         )
-        if "spac" in reason.casefold():
+        if item.get("only_reason"):
+            text += "\nApplying: " + RENAME_RULES[item["only_reason"]] + " only"
+            if proposed != item["proposed"]:
+                text += " (custom filename edit overrides this rule)"
+            text += "\nOther available changes left for later: " + (
+                ", ".join(item.get("other_reasons", [])) or "None"
+            )
+        if "spac" in reason.casefold() or any(
+            "spac" in label.casefold() for label in item.get("other_reasons", [])
+        ):
             text += (
                 "\nSpaces shown as \u00b7: "
                 + item["path"].replace(" ", "\u00b7")
@@ -286,6 +475,8 @@ class RenameDialog(QDialog):
     def approve_valid(self):
         with self.stable_rows(), QSignalBlocker(self.table):
             for row in range(self.table.rowCount()):
+                if self.proposal_at(row).get("accepted"):
+                    continue
                 try:
                     validate_name(self.table.item(row, 2).text())
                     self.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
@@ -304,6 +495,8 @@ class RenameDialog(QDialog):
         for approval in approvals:
             row = approval.row()
             proposal = self.proposal_at(row)
+            if proposal.get("accepted"):
+                continue
             if missing_only and self.table.item(row, 2).text().strip():
                 continue
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked:
@@ -326,6 +519,7 @@ class RenameDialog(QDialog):
             }
             for row in range(self.table.rowCount())
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
+            and not self.proposal_at(row).get("accepted")
         ]
 
     def accept(self):
