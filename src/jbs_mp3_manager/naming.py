@@ -16,13 +16,28 @@ def filename_parts(filename):
     return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ("", "")
 
 
+def possible_first_name_first(artist):
+    """Return a comparison form; callers verify it against the existing artist name."""
+    if artist.count(",") != 1:
+        return ""
+    last, first = (part.strip() for part in artist.split(",", 1))
+    if not last or not first or first.casefold() == "the":
+        return ""
+    return first + " " + last
+
+
+def same_artist_name(first, second):
+    return " ".join(first.split()).casefold() == " ".join(second.split()).casefold()
+
+
 def change_reason(current, proposed):
     if not proposed:
         return "Needs artist/title details"
     old, new = Path(current), Path(proposed)
     reasons = []
-    if old.suffix != new.suffix:
-        reasons.append(f"Extension {old.suffix} \u2192 {new.suffix}")
+    new_artist, _ = filename_parts(proposed)
+    if possible_first_name_first(new_artist):
+        reasons.append("Artist name order: review comma name")
     if old.stem != new.stem:
         artist, title = filename_parts(current)
         if (
@@ -31,6 +46,10 @@ def change_reason(current, proposed):
             and new.stem.startswith(filename_artist(artist) + "--")
         ):
             reasons.append("Move leading The to artist suffix")
+        elif possible_first_name_first(artist) and same_artist_name(
+            possible_first_name_first(artist), new_artist
+        ):
+            reasons.append("Artist name order: first name first")
         elif old.stem.casefold() == new.stem.casefold():
             reasons.append("Change letter case")
         elif artist and "--" not in old.stem and new.stem == artist + "--" + title:
@@ -41,6 +60,8 @@ def change_reason(current, proposed):
             reasons.append("Normalize artist/title separator or spacing")
         else:
             reasons.append("Update artist/title spelling or filename characters")
+    if old.suffix != new.suffix:
+        reasons.append(f"Extension {old.suffix} \u2192 {new.suffix}")
     return "; ".join(reasons) or "No filename change"
 
 
@@ -92,6 +113,13 @@ def proposals(library, song_ids=None):
             continue
         fallback_artist, fallback_title = filename_parts(song["path"])
         artist = song["artist"].strip() or fallback_artist
+        retained_order = bool(
+            fallback_artist
+            and possible_first_name_first(artist)
+            and same_artist_name(possible_first_name_first(artist), fallback_artist)
+        )
+        if retained_order:
+            artist = fallback_artist
         title = song["title"].strip() or fallback_title
         name = suggested_name(artist, title)
         if name == Path(song["path"]).name:
@@ -103,9 +131,12 @@ def proposals(library, song_ids=None):
                 "rename_title": title,
                 "proposed": name,
                 "reason": change_reason(song["path"], name),
-                "basis": "Metadata"
-                if song["artist"].strip() and song["title"].strip()
-                else "Filename fallback / review needed",
+                "basis": (
+                    "Metadata"
+                    if song["artist"].strip() and song["title"].strip()
+                    else "Filename fallback / review needed"
+                )
+                + ("; first-name-first artist retained from filename" if retained_order else ""),
             }
         )
     return result

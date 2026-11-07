@@ -153,6 +153,118 @@ def test_select_all_handles_large_batches_without_approving_missing_names(qapp):
     dialog.close()
 
 
+@pytest.mark.parametrize(
+    "filename,metadata_artist,title,expected,order_reason",
+    [
+        ("Alex Performer--A Song.mp3", "Performer, Alex", "A Song", None, False),
+        (
+            "Alex Performer--A Song.MP3",
+            "Performer, Alex",
+            "New Title",
+            "Alex Performer--New Title.mp3",
+            False,
+        ),
+        ("Performer, Alex--A Song.mp3", "Alex Performer", "A Song", "Alex Performer--A Song.mp3", True),
+        (
+            "Alex Performer--A Song.mp3",
+            "Performer, Alexander",
+            "A Song",
+            "Performer, Alexander--A Song.mp3",
+            True,
+        ),
+        (
+            "The Example Band--A Song.mp3",
+            "The Example Band",
+            "A Song",
+            "Example Band, The--A Song.mp3",
+            False,
+        ),
+        (
+            "Earth, Wind & Fire--A Song.MP3",
+            "Earth, Wind & Fire",
+            "A Song",
+            "Earth, Wind & Fire--A Song.mp3",
+            True,
+        ),
+    ],
+)
+def test_filename_artist_order_uses_existing_name_evidence_and_flags_ambiguous_names(
+    library, filename, metadata_artist, title, expected, order_reason
+):
+    song = library.songs()[0]
+    library.path(song).rename(library.root / filename)
+    library.scan()
+    library.edit_metadata([song["id"]], {"artist": metadata_artist, "title": title})
+    before = (library.root / filename).read_bytes()
+    items = proposals(library, [song["id"]])
+    if expected is None:
+        assert items == []
+    else:
+        assert items[0]["proposed"] == expected
+        assert items[0]["reason"].startswith("Artist name order:") is order_reason
+    assert library.song(song["id"])["artist"] == metadata_artist
+    assert (library.root / filename).read_bytes() == before
+
+
+def test_sorting_and_editing_rename_proposals_keep_approvals_attached_to_the_right_file(qapp, library):
+    from PySide6.QtCore import Qt
+
+    songs = library.songs()
+    names = ["The Example Band--A Song.mp3", "Artist--Another Song.MP3", "Unknown.mp3"]
+    for song, name in zip(songs, names):
+        library.path(song).rename(library.root / name)
+    library.scan()
+    before = {song["id"]: library.path(library.song(song["id"])).read_bytes() for song in songs}
+    dialog = RenameDialog(proposals(library))
+    dialog.table.sortItems(3, Qt.SortOrder.DescendingOrder)
+    for row in range(dialog.table.rowCount()):
+        assert dialog.table.isRowHidden(row) is (not bool(dialog.table.item(row, 2).text()))
+    row = next(row for row in range(dialog.table.rowCount()) if dialog.table.item(row, 1).text() == names[0])
+    dialog.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+    # This changes the reason and moves the edited row under the active sort.
+    dialog.table.item(row, 2).setText("Zed Artist--Edited Title.mp3")
+    dialog.table.sortItems(3, Qt.SortOrder.AscendingOrder)
+    approved = dialog.approved()
+    assert approved == [
+        {
+            "id": songs[0]["id"],
+            "sha256": library.song(songs[0]["id"])["sha256"],
+            "name": "Zed Artist--Edited Title.mp3",
+        }
+    ]
+    rename_files(library, approved)
+    for song in songs:
+        assert library.path(library.song(song["id"])).read_bytes() == before[song["id"]]
+    assert library.song(songs[0]["id"])["path"] == "Zed Artist--Edited Title.mp3"
+    assert library.song(songs[1]["id"])["path"] == names[1]
+    dialog.close()
+
+
+def test_one_by_one_review_visits_each_record_once_when_edits_resort_rows(qapp, library, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    seen = []
+    dialog = RenameDialog(proposals(library))
+    dialog.table.sortItems(2, Qt.SortOrder.AscendingOrder)
+
+    class EnterName(RenameOneDialog):
+        def __init__(self, proposal, parent):
+            super().__init__(proposal, parent)
+            self.song_id = proposal["id"]
+
+        def exec(self):
+            seen.append(self.song_id)
+            self.filename.setText(f"Artist--Song {self.song_id}.mp3")
+            return self.DialogCode.Accepted
+
+    monkeypatch.setattr("jbs_mp3_manager.arrival_dialogs.RenameOneDialog", EnterName)
+    dialog.review_one_by_one()
+    assert len(seen) == len(set(seen)) == 3
+    assert {item["id"] for item in dialog.approved()} == set(seen)
+    assert all(item["id"] in item["name"] for item in dialog.approved())
+    dialog.close()
+
+
 def test_rename_collision_is_rejected_without_overwriting(library):
     first, second = library.songs()[:2]
     original = library.path(second).read_bytes()

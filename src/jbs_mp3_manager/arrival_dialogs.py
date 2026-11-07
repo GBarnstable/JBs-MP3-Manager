@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -86,6 +88,7 @@ class RenameDialog(QDialog):
     def __init__(self, proposals, parent=None, *, auto_review=False):
         super().__init__(parent)
         self.proposals = proposals
+        self.by_id = {proposal["id"]: proposal for proposal in proposals}
         self.setWindowTitle("Rename library files — review and approve")
         self.resize(1080, 660)
         layout = QVBoxLayout(self)
@@ -93,6 +96,7 @@ class RenameDialog(QDialog):
             "Names use Artist/Title metadata first, then filenames with --, - -, or spaced dash separators. "
             "Unchanged filenames are omitted. Only checked rows are renamed. "
             "The reason column explains small changes such as .MP3 to .mp3 or extra spaces. "
+            "Click a column heading to sort. Artist name order has its own reason. "
             "Categories and song IDs are preserved. Old playlists may need re-export after filenames change."
         )
         note.setWordWrap(True)
@@ -110,6 +114,7 @@ class RenameDialog(QDialog):
         for row, proposal in enumerate(proposals):
             check = QTableWidgetItem()
             check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            check.setData(Qt.ItemDataRole.UserRole, proposal["id"])
             check.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(row, 0, check)
             for column, value in enumerate(
@@ -153,6 +158,9 @@ class RenameDialog(QDialog):
         layout.addWidget(self.box)
         self.table.currentCellChanged.connect(self.show_details)
         self.table.itemChanged.connect(self.row_changed)
+        self.table.model().layoutChanged.connect(self.refresh_visibility)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(3, Qt.SortOrder.AscendingOrder)
         self.update_summary()
         first = next((row for row in range(self.table.rowCount()) if not self.table.isRowHidden(row)), None)
         if first is not None:
@@ -164,6 +172,25 @@ class RenameDialog(QDialog):
             )
         if auto_review and proposals:
             QTimer.singleShot(0, self.review_one_by_one)
+
+    def proposal_at(self, row):
+        return self.by_id[self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)]
+
+    @contextmanager
+    def stable_rows(self):
+        sorting = self.table.isSortingEnabled()
+        if sorting:
+            self.table.setSortingEnabled(False)
+        try:
+            yield
+        finally:
+            if sorting:
+                self.table.setSortingEnabled(True)
+
+    def refresh_visibility(self, *_):
+        for row in range(self.table.rowCount()):
+            self.table.setRowHidden(row, not bool(self.table.item(row, 2).text().strip()))
+        self.show_details(self.table.currentRow())
 
     def update_summary(self):
         missing = sum(not self.table.item(row, 2).text().strip() for row in range(self.table.rowCount()))
@@ -180,21 +207,22 @@ class RenameDialog(QDialog):
 
     def row_changed(self, item):
         if item.column() == 2:
-            row = item.row()
-            reason = change_reason(self.proposals[row]["path"], item.text().strip())
-            self.table.item(row, 3).setText(reason)
-            self.table.item(row, 3).setToolTip(reason)
-            self.table.item(row, 2).setToolTip(item.text())
-            self.table.setRowHidden(row, not bool(item.text().strip()))
-            if not item.text().strip():
-                self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
-            self.show_details(row)
+            with self.stable_rows(), QSignalBlocker(self.table):
+                row = item.row()
+                reason = change_reason(self.proposal_at(row)["path"], item.text().strip())
+                self.table.item(row, 3).setText(reason)
+                self.table.item(row, 3).setToolTip(reason)
+                self.table.item(row, 2).setToolTip(item.text())
+                self.table.setRowHidden(row, not bool(item.text().strip()))
+                if not item.text().strip():
+                    self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+            self.show_details(item.row())
         self.update_summary()
 
     def show_details(self, row, *_):
-        if not 0 <= row < len(self.proposals):
+        if not 0 <= row < self.table.rowCount():
             return
-        item = self.proposals[row]
+        item = self.proposal_at(row)
         proposed = self.table.item(row, 2).text()
         reason = change_reason(item["path"], proposed)
         text = (
@@ -211,7 +239,7 @@ class RenameDialog(QDialog):
         self.detail.setPlainText(text)
 
     def approve_valid(self):
-        with QSignalBlocker(self.table):
+        with self.stable_rows(), QSignalBlocker(self.table):
             for row in range(self.table.rowCount()):
                 try:
                     validate_name(self.table.item(row, 2).text())
@@ -221,32 +249,37 @@ class RenameDialog(QDialog):
         self.update_summary()
 
     def clear(self):
-        with QSignalBlocker(self.table):
+        with self.stable_rows(), QSignalBlocker(self.table):
             for row in range(self.table.rowCount()):
                 self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
         self.update_summary()
 
     def review_one_by_one(self, checked=False, *, missing_only=False):
-        for row, proposal in enumerate(self.proposals):
+        approvals = [self.table.item(row, 0) for row in range(self.table.rowCount())]
+        for approval in approvals:
+            row = approval.row()
+            proposal = self.proposal_at(row)
             if missing_only and self.table.item(row, 2).text().strip():
                 continue
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked:
                 continue
             dialog = RenameOneDialog({**proposal, "proposed": self.table.item(row, 2).text()}, self)
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.table.item(row, 2).setText(dialog.filename.text().strip())
-                self.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+                with self.stable_rows():
+                    row = approval.row()
+                    self.table.item(row, 2).setText(dialog.filename.text().strip())
+                    approval.setCheckState(Qt.CheckState.Checked)
             if dialog.stop_review:
                 break
 
     def approved(self):
         return [
             {
-                "id": proposal["id"],
+                "id": self.proposal_at(row)["id"],
                 "name": self.table.item(row, 2).text().strip(),
-                "sha256": proposal["sha256"],
+                "sha256": self.proposal_at(row)["sha256"],
             }
-            for row, proposal in enumerate(self.proposals)
+            for row in range(self.table.rowCount())
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked
         ]
 
