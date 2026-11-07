@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from .arrival_dialogs import ComparisonDialog, RenameDialog
 from .dialogs import (
     CategoryDialog,
     EqualizerDialog,
@@ -58,11 +59,13 @@ from .dialogs import (
     ImportPreview,
     MetadataDialog,
 )
+from .duplicates import archive_inventory, purge_archives, recover_pending
 from .duplicates import merge as merge_duplicates
-from .duplicates import recover_pending
 from .duplicates import review as duplicate_review
 from .exports import execute_export
+from .fingerprinting import apply_decisions, find_candidates, index_library
 from .library import DATA_DIR, Library
+from .naming import proposals, rename_files
 from .playback import Playback
 from .review_dialog import ReviewDialog
 
@@ -103,6 +106,9 @@ class SongModel(QAbstractTableModel):
         ("duration", "Time"),
         ("categories", "Categories"),
         ("genre", "Genre"),
+        ("bitrate", "Bitrate"),
+        ("size", "File size"),
+        ("sample_rate", "Sample rate"),
         ("path", "File"),
     ]
 
@@ -137,6 +143,12 @@ class SongModel(QAbstractTableModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
             if field == "duration":
                 return clock_text(value or 0)
+            if field == "bitrate":
+                return f"{value / 1000:.0f} kbps" if value else "—"
+            if field == "sample_rate":
+                return f"{value / 1000:g} kHz" if value else "—"
+            if field == "size":
+                return f"{value / (1024 * 1024):.2f} MiB" if value else "—"
             return (value or Path(song["path"]).stem) if field == "title" else value
         if role == Qt.ItemDataRole.ForegroundRole and song["missing"]:
             return QColor("#b1544b")
@@ -147,6 +159,11 @@ class WorkerSignals(QObject):
     progress = Signal(str)
     completed = Signal(object)
     failed = Signal(str)
+    cancelled = Signal()
+
+
+class OperationCancelled(Exception):
+    pass
 
 
 class Worker(QRunnable):
@@ -155,12 +172,15 @@ class Worker(QRunnable):
         self.root = root
         self.operation = operation
         self.signals = WorkerSignals()
+        self.cancel_requested = False
 
     def run(self):
         try:
             last = [0.0]
 
             def progress(message):
+                if self.cancel_requested:
+                    raise OperationCancelled()
                 now = time.monotonic()
                 if now - last[0] >= 0.1:
                     last[0] = now
@@ -169,6 +189,8 @@ class Worker(QRunnable):
             with Library(self.root) as library:
                 result = self.operation(library, progress)
             self.signals.completed.emit(result)
+        except OperationCancelled:
+            self.signals.cancelled.emit()
         except Exception:
             self.signals.failed.emit(traceback.format_exc())
 
@@ -183,6 +205,7 @@ class MainWindow(QMainWindow):
         self.library_lock = None
         self.busy = False
         self.worker = None
+        self._offer_pending = False
         self.current_category = None
         self.settings = QSettings("JBsMP3Manager", "Desktop")
         self.pool = QThreadPool(self)
@@ -388,6 +411,9 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 0)
         self.progress.hide()
         layout.addWidget(self.progress)
+        self.cancel_button = self.button("Cancel audio indexing", self.cancel_job)
+        self.cancel_button.hide()
+        layout.addWidget(self.cancel_button)
         self.statusBar().showMessage("Local music. Virtual categories. No account required.")
         if self.playback:
             self.playback.track_changed.connect(self.track_changed)
@@ -404,6 +430,11 @@ class MainWindow(QMainWindow):
             ("Verify all files…", self.verify, "", True),
             ("Import category folders…", self.import_categories, "", True),
             ("Review import issues / duplicates…", self.review_issues, "", True),
+            ("Rename selected / category / all files…", self.review_names, "", True),
+            ("Review new songs…", self.review_new_songs, "", True),
+            ("Compare selected recordings…", self.compare_selected, "", True),
+            ("Build / refresh audio fingerprint index…", self.build_audio_index, "", True),
+            ("Delete previously archived duplicate copies…", self.clean_duplicate_archives, "", True),
             ("Back up category database…", self.backup, "", True),
             ("Open reports folder", self.open_reports, "", True),
             ("Open music folder", self.open_music_folder, "", True),
@@ -416,6 +447,13 @@ class MainWindow(QMainWindow):
             if requires:
                 self.library_actions.append(action)
         help_menu = self.menuBar().addMenu("Help")
+        self.auto_review_action = QAction("Review new song names and duplicates automatically", self)
+        self.auto_review_action.setCheckable(True)
+        self.auto_review_action.setChecked(True)
+        self.auto_review_action.toggled.connect(
+            lambda value: self.library.set_setting("auto_review_new", value) if self.library else None
+        )
+        file_menu.addAction(self.auto_review_action)
         action = QAction("About / moving your library", self)
         action.triggered.connect(self.about)
         help_menu.addAction(action)
@@ -487,6 +525,10 @@ class MainWindow(QMainWindow):
                 self.library.close()
                 self.library_lock.unlock()
             self.library, self.library_lock = library, lock
+            self.auto_review_action.blockSignals(True)
+            self.auto_review_action.setChecked(library.setting("auto_review_new", True))
+            self.auto_review_action.blockSignals(False)
+            self._offer_pending = True
             watched = self.watcher.directories()
             if watched:
                 self.watcher.removePaths(watched)
@@ -600,7 +642,7 @@ class MainWindow(QMainWindow):
                 "Play uses highlighted songs. Play category uses the category. Exports let you choose songs or categories."
             )
 
-    def run_job(self, operation, completed=None, *, quiet=False):
+    def run_job(self, operation, completed=None, *, quiet=False, cancellable=False):
         if self.busy or not self.library:
             return
         self.busy = True
@@ -608,11 +650,13 @@ class MainWindow(QMainWindow):
             widget.setEnabled(False)
         self.menuBar().setEnabled(False)
         self.progress.show()
+        self.cancel_button.setVisible(cancellable)
         worker = Worker(self.library.root, operation)
         self.worker = worker
         worker.signals.progress.connect(self.job_progress)
         worker.signals.completed.connect(lambda result: self.job_done(result, completed, quiet))
         worker.signals.failed.connect(self.job_failed)
+        worker.signals.cancelled.connect(self.job_cancelled)
         self.pool.start(worker)
 
     def job_progress(self, message):
@@ -624,6 +668,7 @@ class MainWindow(QMainWindow):
             widget.setEnabled(True)
         self.menuBar().setEnabled(True)
         self.progress.hide()
+        self.cancel_button.hide()
         self.refresh()
 
     def job_done(self, result, completed, quiet):
@@ -646,6 +691,151 @@ class MainWindow(QMainWindow):
         box.setDetailedText(details)
         box.exec()
 
+    def cancel_job(self):
+        if self.worker and self.busy:
+            self.worker.cancel_requested = True
+            self.statusBar().showMessage(
+                "Stopping after the current audio file; completed index entries are saved."
+            )
+
+    def job_cancelled(self):
+        self.end_job()
+        self.statusBar().showMessage("Audio indexing stopped. Run it again to continue from the saved index.")
+
+    def stop_for_file_changes(self):
+        if self.playback:
+            self.playback.stop()
+            for deck in self.playback.decks:
+                deck.set_media(None)
+
+    def build_audio_index(self):
+        self.run_job(
+            lambda library, progress: index_library(library, progress),
+            lambda result: self.show_report("Audio index", result),
+            cancellable=True,
+        )
+
+    def review_names(self, checked=False, *, song_ids=None, auto_review=False):
+        if not self.library or self.busy:
+            return
+        if song_ids is None:
+            selected = self.selected_songs()
+            options = ([f"Selected songs ({len(selected)})"] if selected else []) + [
+                "Current category",
+                "Entire library",
+            ]
+            scope, accepted = QInputDialog.getItem(
+                self, "Rename scope", "Choose songs to review:", options, editable=False
+            )
+            if not accepted:
+                return
+            if scope.startswith("Selected songs"):
+                song_ids = [song["id"] for song in selected]
+            elif scope == "Current category":
+                song_ids = [song["id"] for song in self.library.songs(self.current_category)]
+
+        def loaded(items):
+            if not items:
+                return
+            dialog = RenameDialog(items, self, auto_review=auto_review)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                approved = dialog.approved()
+                self.stop_for_file_changes()
+                self.run_job(
+                    lambda library, progress: rename_files(library, approved, progress),
+                    lambda result: QMessageBox.information(
+                        self,
+                        "Filename review complete",
+                        f"Renamed {result['renamed']} files. Categories and metadata were preserved.\n\n"
+                        "Re-export older playlists that reference changed filenames.",
+                    ),
+                )
+
+        self.run_job(lambda library, progress: proposals(library, song_ids), loaded)
+
+    def review_new_songs(self, checked=False, *, song_ids=None):
+        if not self.library or self.busy:
+            return
+        if song_ids is None:
+            song_ids = [
+                row[0]
+                for row in self.library.db.execute(
+                    "SELECT n.song_id FROM new_arrivals n "
+                    "JOIN songs s ON s.id=n.song_id WHERE s.missing=0 ORDER BY n.rowid LIMIT 20"
+                )
+            ]
+        song_ids = list(song_ids)[:20]
+        if not song_ids:
+            QMessageBox.information(
+                self,
+                "Review new songs",
+                "No pending new songs. Use Library → Compare selected recordings to compare highlighted songs.",
+            )
+            return
+
+        def continue_names(keepers=()):
+            wanted = set(song_ids) | set(keepers)
+            active = [song["id"] for song in self.library.songs() if song["id"] in wanted]
+            self.review_names(song_ids=active, auto_review=True)
+
+        def loaded(result):
+            if not result["pairs"]:
+                continue_names()
+                return
+            dialog = ComparisonDialog(result, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            decisions = dialog.decisions()
+            if not decisions:
+                continue_names()
+                return
+            self.stop_for_file_changes()
+
+            def applied(summary):
+                self.show_report("Recording comparison", summary)
+                continue_names(summary["keeper_ids"])
+
+            self.run_job(lambda library, progress: apply_decisions(library, decisions, progress), applied)
+
+        self.run_job(lambda library, progress: find_candidates(library, song_ids, progress), loaded)
+
+    def compare_selected(self):
+        selected = self.selected_songs()
+        if not selected:
+            QMessageBox.information(
+                self, "Compare recordings", "Select one or more songs to compare with the library."
+            )
+            return
+        self.review_new_songs(song_ids=[song["id"] for song in selected])
+
+    def clean_duplicate_archives(self):
+        if not self.library or self.busy:
+            return
+        batches = self.guarded(lambda: archive_inventory(self.library))
+        if not batches:
+            QMessageBox.information(
+                self, "Delete archived duplicate copies", "No archived duplicate audio files were found."
+            )
+            return
+        files = [file for batch in batches for file in batch["files"]]
+        total = sum(file["size"] for file in files) / (1024 * 1024)
+        box = QMessageBox(self)
+        box.setWindowTitle("Permanently delete archived duplicate audio")
+        box.setText(
+            f"Delete {len(files)} archived MP3 copies ({total:.1f} MiB)?\n\n"
+            "Their current master recordings will be checked first. Database backups and manifests remain. "
+            "Deleted audio copies cannot be restored from those database backups."
+        )
+        box.setDetailedText("\n".join(file["original"] for file in files))
+        delete = box.addButton("Delete archived audio", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() == delete:
+            self.run_job(
+                lambda library, progress: purge_archives(library, [batch["id"] for batch in batches]),
+                lambda result: self.show_report("Archive cleanup", result),
+            )
+
     def schedule_scan(self, *_):
         self.debounce.start()
 
@@ -662,6 +852,19 @@ class MainWindow(QMainWindow):
                 f"{len(report['duplicates'])} duplicate groups · {len(report['errors'])} errors"
             )
             self.statusBar().showMessage(text)
+            ids = report.get("new_song_ids", [])
+            if self._offer_pending and not ids:
+                ids = [
+                    row[0]
+                    for row in self.library.db.execute(
+                        "SELECT n.song_id FROM new_arrivals n "
+                        "JOIN songs s ON s.id=n.song_id WHERE s.missing=0 ORDER BY n.rowid LIMIT 20"
+                    )
+                ]
+            self._offer_pending = False
+            if ids and self.library.setting("auto_review_new", True):
+                self.review_new_songs(song_ids=ids)
+                return
             if not quiet and (report["errors"] or report["duplicates"]):
                 self.show_report("Scan report", report)
 
@@ -786,19 +989,28 @@ class MainWindow(QMainWindow):
                 self.playback.stop()
                 for deck in self.playback.decks:
                     deck.set_media(None)
+            delete_extras = dialog.delete_extras.isChecked()
             self.run_job(
-                lambda library, progress: merge_duplicates(library, snapshot, choices, progress), finished
+                lambda library, progress: merge_duplicates(
+                    library, snapshot, choices, progress, delete_extras=delete_extras
+                ),
+                finished,
             )
 
         def finished(result):
             message = (
                 f"Merged {result['groups_merged']} duplicate groups.\n"
-                f"Archived {result['files_archived']} files and removed {result['records_removed']} "
+                f"Deleted {result['files_deleted']} extra copies, retained "
+                f"{result['files_archived'] - result['files_deleted']} archived copies, and removed {result['records_removed']} "
                 "redundant library records.\n"
                 f"Resolved {result['issues_resolved']} import entries; "
                 f"{result['remaining_issues']} remain.\n\n"
-                f"Database backup, archived MP3s, and recovery manifest:\n{result['backup_folder']}"
+                f"Database backup and recovery manifest:\n{result['backup_folder']}"
             )
+            if result["delete_errors"]:
+                message += "\nSome obsolete copies could not be deleted and were retained:\n" + "\n".join(
+                    str(error) for error in result["delete_errors"]
+                )
             if result["audit_error"]:
                 message += (
                     "\nThe final manifest could not be updated; the committed database records the merge."
@@ -883,6 +1095,19 @@ class MainWindow(QMainWindow):
             box.setText(f"Updated: {report['updated']} · Errors: {len(report.get('errors', []))}")
         elif "copied" in report:
             box.setText(f"Copied: {report['copied']} · Errors: {len(report.get('errors', []))}")
+        elif "indexed" in report:
+            box.setText(
+                f"Audio fingerprints ready: {report['indexed']} · Errors: {len(report.get('errors', []))}"
+            )
+        elif "replaced" in report:
+            box.setText(
+                f"Recordings replaced: {report['replaced']} · Incoming duplicates deleted: {report['discarded']}"
+                f" · Errors or retained copies: {len(report.get('errors', []))}"
+            )
+        elif "deleted" in report:
+            box.setText(
+                f"Archived copies deleted: {report['deleted']} · Errors: {len(report.get('errors', []))}"
+            )
         else:
             box.setText("Review the operation details below.")
         box.setDetailedText(json.dumps(report, ensure_ascii=False, indent=2))
@@ -962,6 +1187,16 @@ def main():
     app.setStyleSheet(STYLE)
     smoke = "--smoke-test" in sys.argv
     require_audio = "--require-audio" in sys.argv
+    if "--require-fingerprint" in sys.argv:
+        import subprocess
+
+        from .fingerprinting import tool_path
+
+        binary = tool_path()
+        if not binary:
+            sys.exit(3)
+        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        subprocess.run([binary, "-version"], check=True, capture_output=True, timeout=15, **options)
     window = MainWindow(restore=not smoke, enable_audio=not smoke or require_audio)
     if require_audio and window.playback is None:
         sys.exit(2)

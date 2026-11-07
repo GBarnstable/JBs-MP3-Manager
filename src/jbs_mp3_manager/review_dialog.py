@@ -3,6 +3,7 @@ from pathlib import Path
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -17,6 +18,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from .media import quality_text
 
 
 class ReviewDialog(QDialog):
@@ -43,8 +46,9 @@ class ReviewDialog(QDialog):
         layout.addWidget(source)
         note = QLabel(
             "Choose the file to keep in each group you want to resolve. The app combines all existing "
-            "categories and pending categories from this report. Extra files are archived, and their "
-            "library records are removed. The chosen file's metadata is kept unchanged."
+            "categories and pending categories from this report. Extra files are permanently deleted "
+            "when the deletion option below is checked; uncheck it to archive them instead. "
+            "Redundant library records are removed. The chosen file's metadata is kept unchanged."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -122,6 +126,10 @@ class ReviewDialog(QDialog):
         self.plan = QLabel()
         self.plan.setWordWrap(True)
         layout.addWidget(self.plan)
+        self.delete_extras = QCheckBox("Permanently delete unselected copies after a successful merge")
+        self.delete_extras.setChecked(True)
+        self.delete_extras.toggled.connect(self.update_plan)
+        layout.addWidget(self.delete_extras)
         buttons = QHBoxLayout()
         choose_report = QPushButton("Choose another import report…")
         choose_report.clicked.connect(self.choose_report)
@@ -158,8 +166,14 @@ class ReviewDialog(QDialog):
             for group in selected
         )
         pending = sum(len(group["pending_entries"]) for group in selected)
+        action = "deleted" if self.delete_extras.isChecked() else "archived"
+        self.box.button(QDialogButtonBox.StandardButton.Apply).setText(
+            "Merge & delete extra copies"
+            if self.delete_extras.isChecked()
+            else "Back up & merge selected groups"
+        )
         self.plan.setText(
-            f"Selected: {len(selected)} groups · {files} files will be archived · "
+            f"Selected: {len(selected)} groups · {files} files will be {action} · "
             f"{pending} import issues will be resolved.\n"
             "A complete database backup and recovery manifest are saved before the merge. "
             "Original category folders are left in place."
@@ -173,6 +187,7 @@ class ReviewDialog(QDialog):
         lines = []
         for song in group["songs"]:
             lines.append(song["path"] + (" [missing]" if song["missing"] else ""))
+            lines.append("  " + quality_text(song))
             lines.append(
                 "  "
                 + " · ".join(

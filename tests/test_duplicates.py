@@ -254,6 +254,8 @@ def test_review_dialog_requires_explicit_keeper_and_shows_report_issues(qapp, un
     selector = dialog.selectors[snapshot["groups"][0]["key"]]
     selector.setCurrentIndex(1)
     assert len(dialog.choices()) == 1
+    assert "1 files will be deleted" in dialog.plan.text()
+    dialog.delete_extras.setChecked(False)
     assert "1 files will be archived" in dialog.plan.text()
     assert "Dance" in dialog.details.toPlainText()
     dialog.close()

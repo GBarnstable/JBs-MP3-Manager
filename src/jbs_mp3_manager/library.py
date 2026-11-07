@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .exports import EXPORT_DIR
-from .media import FIELDS, inspect_mp3, write_tags
+from .media import FIELDS, audio_properties, inspect_mp3, write_tags
 
 DATA_DIR = ".jbs-mp3-manager"
 RESERVED = {"all songs", "untagged", "missing files"}
@@ -108,8 +108,24 @@ class Library:
             CREATE TABLE IF NOT EXISTS duplicate_batches (
                 id TEXT PRIMARY KEY, manifest TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS file_actions (id TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS fingerprints (
+                audio_hash TEXT PRIMARY KEY, algorithm TEXT NOT NULL, data TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS new_arrivals (
+                song_id TEXT PRIMARY KEY REFERENCES songs(id) ON DELETE CASCADE
+            );
             PRAGMA user_version=1;
         """)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(songs)")}
+        for name, definition in [
+            ("bitrate", "INTEGER NOT NULL DEFAULT 0"),
+            ("sample_rate", "INTEGER NOT NULL DEFAULT 0"),
+            ("channels", "INTEGER NOT NULL DEFAULT 0"),
+            ("bitrate_mode", "TEXT NOT NULL DEFAULT ''"),
+        ]:
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE songs ADD COLUMN {name} {definition}")
         with self.db:
             self.db.execute(
                 "INSERT OR IGNORE INTO settings VALUES ('recursive', ?)", (json.dumps(recursive),)
@@ -233,6 +249,9 @@ class Library:
             info["mtime_ns"],
             0,
         ]
+        for field in ("bitrate", "sample_rate", "channels", "bitrate_mode"):
+            columns.append(field)
+            values.append(info.get(field, "" if field == "bitrate_mode" else 0))
         update = ", ".join(f"{c}=excluded.{c}" for c in columns if c != "id")
         self.db.execute(
             f"INSERT INTO songs ({', '.join(columns)}) VALUES "
@@ -241,9 +260,13 @@ class Library:
         )
 
     def scan(self, progress=lambda message: None, *, verify: bool = False) -> dict:
+        from .duplicates import recover_pending
+
+        recover_pending(self)
         excluded = [p for p in self.root.iterdir() if p.name.casefold() == EXPORT_DIR.casefold()]
         files = mp3_files(self.root, self.setting("recursive", False), excluded=excluded)
         existing = {row["path"]: dict(row) for row in self.db.execute("SELECT * FROM songs")}
+        monitor_new = bool(existing) or self.setting("monitor_initialized", False)
         seen = {p.relative_to(self.root).as_posix() for p in files}
         absent = [s for p, s in existing.items() if p not in seen]
         by_audio = defaultdict(list)
@@ -257,6 +280,7 @@ class Library:
             "missing": 0,
             "errors": [],
             "duplicates": [],
+            "new_song_ids": [],
         }
         # Inspect before committing so a directory enumeration error cannot invalidate the library.
         updates, claimed = [], set()
@@ -273,6 +297,10 @@ class Library:
                     and not previous["missing"]
                     and (previous["size"], previous["mtime_ns"]) == (stat.st_size, stat.st_mtime_ns)
                 ):
+                    if not previous.get("bitrate"):
+                        info = {**previous, **audio_properties(file)}
+                        inspected.append((relative, previous, info))
+                        continue
                     report["unchanged"] += 1
                     continue
                 info = inspect_mp3(file)
@@ -288,6 +316,8 @@ class Library:
                 song_id = previous["id"]
                 # Replacing audio at the same filename must not inherit the old song's categories.
                 replaced = previous["audio_sha256"] != info["audio_sha256"]
+                if replaced and monitor_new:
+                    report["new_song_ids"].append(song_id)
                 report["updated"] += 1
             else:
                 matches = [s for s in by_audio[info["audio_sha256"]] if s["id"] not in claimed]
@@ -298,6 +328,8 @@ class Library:
                 else:
                     song_id = str(uuid.uuid4())
                     report["added"] += 1
+                    if monitor_new:
+                        report["new_song_ids"].append(song_id)
                 replaced = False
             updates.append((song_id, relative, info, replaced))
         with self.db:
@@ -314,6 +346,12 @@ class Library:
                         }
                     )
                 self._store(song_id, relative, info)
+            if monitor_new:
+                self.db.executemany(
+                    "INSERT OR IGNORE INTO new_arrivals VALUES (?)",
+                    [(song_id,) for song_id in report["new_song_ids"]],
+                )
+            self.db.execute("INSERT OR REPLACE INTO settings VALUES ('monitor_initialized','true')")
         report["missing"] = self.db.execute("SELECT COUNT(*) FROM songs WHERE missing=1").fetchone()[0]
         groups = defaultdict(list)
         for song in self.songs():

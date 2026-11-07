@@ -33,6 +33,16 @@ def main():
         "--hidden-import",
         "vlc",
     ]
+    fingerprint = ROOT / "build" / "fingerprint"
+    if not (fingerprint / "fpcalc.exe").is_file():
+        raise RuntimeError("Run python scripts/fetch_fpcalc.py before building.")
+    runtime = ROOT / "build" / "fingerprint-runtime"
+    runtime.mkdir(exist_ok=True)
+    for path in fingerprint.iterdir():
+        if path.name == "fpcalc.exe" or path.name.startswith("CHROMAPRINT-"):
+            shutil.copy2(path, runtime / path.name)
+    shutil.copy2(ROOT / "licenses" / "LGPL-2.1.txt", runtime / "LGPL-2.1.txt")
+    command += ["--add-data", str(runtime) + os.pathsep + "fingerprint"]
     if args.vlc_dir:
         if not (args.vlc_dir / "libvlc.dll").is_file() or not (args.vlc_dir / "plugins").is_dir():
             parser.error("--vlc-dir must contain libvlc.dll and the plugins folder.")

@@ -2,7 +2,7 @@
 
 A local Windows desktop application for one master MP3 folder and any number of virtual categories. A song can belong to several categories without making extra copies.
 
-**Version 0.3** adds an in-app import-issue and duplicate review screen. Choose a master file to keep, merge its categories and pending assignments from a saved report, and archive the extra copies with automatic database backup and interrupted-operation recovery. Existing 0.1/0.2 libraries open directly and keep their categories. See [QUICK_START.md](QUICK_START.md) for the guided duplicate workflow and moving D: → C:.
+**Version 0.4** adds metadata-first filename review, incoming duplicate/quality comparisons with offline audio fingerprints, and approved permanent duplicate deletion. Existing libraries open directly and retain their categories. See [QUICK_START.md](QUICK_START.md) for the approval workflow, cleanup of older archives, and moving D: → C:.
 
 ## Included
 
@@ -15,13 +15,21 @@ A local Windows desktop application for one master MP3 folder and any number of 
 - UTF-8 M3U8 playlists with relative paths where possible; absolute fallback across Windows drives.
 - Explicit export dialogs choose a category, individual songs, or several categories. Combine categories with each song once or export one playlist/folder per category. Playlists default to `Exports/Playlists`; new MP3 export folders are created under `Exports`, with an accompanying playlist and manifest. Repeat exports use new names, and the entire Exports tree is excluded from scans, including recursive scans. Originals stay in the master folder.
 - Duplicate-audio reporting, full verification scan, database backup, and protection against opening the same library twice in the desktop app.
-- **Review issues** shows duplicate groups, complete candidate filenames/metadata, and unresolved/resolved import entries. Each keeper must be explicitly chosen. Merging preserves the keeper's ID, filename, and MP3 tags; combines memberships from every copy and pending report row; archives extra files; and removes redundant database records without leaving Missing files. Saved import reports can resolve directly even if the original category folders are unavailable. Future CSV reports include candidate filenames too.
-- Merge backups live in `.jbs-mp3-manager/duplicate-backups/<batch>`: a complete pre-merge SQLite snapshot, byte-preserving numbered MP3 archives, and a manifest mapping their original filenames. An unfinished file move is rolled back before the next startup scan; a committed database ledger prevents incorrectly undoing a completed merge. Backups are excluded from scanning and travel with the library.
+- **Review issues** shows duplicate groups, complete candidate filenames/metadata, and unresolved/resolved import entries. Each keeper must be explicitly chosen. Merging preserves the keeper's ID, filename, and MP3 tags; combines memberships from every copy and pending report row; deletes extra files when the explicit deletion option is checked (or archives them when unchecked); and removes redundant database records without leaving Missing files. Saved import reports can resolve directly even if the original category folders are unavailable. Future CSV reports include candidate filenames too.
+- Merge backups live in `.jbs-mp3-manager/duplicate-backups/<batch>`: a complete pre-merge SQLite snapshot, numbered MP3 archives when deletion is unchecked, and a manifest mapping their original filenames. An unfinished file move is rolled back before the next startup scan; a committed database ledger prevents incorrectly undoing a completed merge. Backups are excluded from scanning and travel with the library.
+
+- Sortable bitrate, file size, and sample-rate columns, with fuller quality details in duplicate reviews.
+- Filename proposals use Artist/Title metadata first and fall back to `artist--title` filenames. The convention is `Artist--Song title.mp3`, moving a leading `The` to `, The` for the artist only (except `The The`). Review individually in an editable dialog, or explicitly approve suggestions in the table. Choose selected songs, a category, or the whole library. Renames preserve bytes, IDs, memberships, and ID3 tags.
+- New arrivals persist in a review inbox. Automatic review compares possible duplicate recordings before offering per-song filename approval; disable automatic prompting from the Library menu or return later with **Review new songs**. Initial library creation does not prompt for every existing song. Reviews handle up to 20 arrivals at a time.
+- Offline Chromaprint comparisons identify some re-encoded duplicates. The comparison dialog shows encoding indicators and offers keep both, replace current with incoming and delete old, or keep current and delete incoming. Replacement retains the current song ID and filename, transfers all supported ID3 frames (including artwork, ratings, and custom tags; current values win conflicts), and combines categories from both records. Unverified metadata-only matches require explicit acknowledgment.
+- Renames and replacements stage original files with a database snapshot and recovery manifest before committing. Only after a successful database commit and checksum verification are obsolete copies deleted. Recovery restores interrupted uncommitted changes before scanning; committed changes are retained. **Delete previously archived duplicate copies** previews and removes verified obsolete archives left by older versions while preserving database snapshots and manifests.
 
 ## Known limits
 
 - Independent musical pitch/key shifting is not implemented. Tempo processing and crossfade quality still need listening tests on the target Windows PC.
-- MP3 only. Category matching does not use acoustic fingerprints: re-encoded files, different edits, or different recordings of the same song require review. Duplicate masters merge only after you select the keeper; extra files are archived, never permanently deleted by the merge.
+- MP3 only. Category-folder imports use exact encoded-audio matching; incoming recording comparisons also use local Chromaprint fingerprints. Covers, live versions, edits, very short clips, and badly labeled files can still need manual review. Incoming checks compare cached fingerprints and up to eight uncached duration/metadata candidates per song; the optional audio index improves coverage. Fingerprints compare up to the first 90 seconds and are evidence, not proof of an identical recording.
+- Higher bitrate, sample rate, channels, and file size are comparison indicators, not a guarantee of source quality. No automatic replacement or deletion occurs. Approved permanent deletions cannot be recovered from the retained database snapshots.
+- Renaming changes filenames without rewriting ID3 Artist/Title tags. External playlists referencing the old filenames need re-exporting. Existing destination files are never overwritten.
 - On import, each selected folder becomes one category, including MP3s in its descendants. Categories are flat and independent of the MP3 genre tag. Reserved view names cannot be used as categories; rename such source folders before importing them.
 - The monitor runs while the application is open. Startup scans catch files added while it was closed. Recursive subfolder changes are caught by the periodic scan.
 - A quick scan checks size and modification time. Use **Library → Verify all files** to detect changes that deliberately preserve both.
@@ -32,7 +40,9 @@ A local Windows desktop application for one master MP3 folder and any number of 
 
 ## Windows download
 
-Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.3.0-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
+Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.4.0-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
+
+If you already have the portable 0.3 application, the **0.4.0-UPDATE-from-0.3** artifact is a smaller alternative: close the app and merge all update files into the existing 0.3 application folder, accepting file replacements. Keep the original `_internal` folder and merge its new contents. This update cannot run on its own. The workflow verifies the update over the original 0.3 package, including startup, VLC, and the fingerprint tool.
 
 The CI package includes the 64-bit VLC runtime, so Python and a separate VLC installation are not needed. The application is unsigned; Windows may show its normal unknown-publisher prompt. Windows 10/11, 64-bit, is the target. Automated build/decoding checks cannot replace listening and migration tests on your own computer.
 
@@ -43,6 +53,7 @@ Install Python 3.11 or later (64-bit) and [VLC 3.x, 64-bit](https://www.videolan
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe scripts\fetch_fpcalc.py
 .\.venv\Scripts\python.exe -m jbs_mp3_manager
 ```
 
@@ -64,5 +75,7 @@ Build a portable Windows folder and ZIP on Windows:
 ```
 
 Tests generate their own synthetic MP3s with FFmpeg (system FFmpeg or the development dependency `imageio-ffmpeg`). No personal music files are in this repository. Real VLC checks cover decoding, concurrently playing crossfade decks, and PCM level before/after EQ and reset. They skip if VLC is unavailable; CI sets `JBS_REQUIRE_VLC=1` so missing VLC fails the build. Additional playback transition tests use a controlled fake engine to simulate delayed startup. Export tests verify explicit selections, multiple-category layouts, deduplication, new folders, and recursive scan exclusion. UI tests use Qt's offscreen platform.
+
+The new file-operation tests cover stable IDs, categories, ID3 artwork/ratings/custom frames, collision rejection, SQL rollback, interrupted rename/replacement recovery, and post-commit recovery. A generated musical signal re-encoded at two bitrates exercises the actual fingerprint tool.
 
 The code separates MP3 inspection (`media.py`), portable library operations (`library.py`), audio playback (`playback.py`), and desktop views (`app.py`, `dialogs.py`). File operations run on a background worker so the event loop and playback timer remain responsive.

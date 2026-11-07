@@ -17,6 +17,24 @@ FIELDS = ("title", "artist", "album", "genre", "year", "track")
 FRAMES = dict(zip(FIELDS, (TIT2, TPE1, TALB, TCON, TDRC, TRCK)))
 
 
+def audio_properties(path: Path) -> dict:
+    info = MP3(path).info
+    return {
+        "bitrate": int(info.bitrate or 0),
+        "sample_rate": int(info.sample_rate or 0),
+        "channels": int(info.channels or 0),
+        "bitrate_mode": str(getattr(info, "bitrate_mode", "Unknown")).split(".")[-1],
+    }
+
+
+def quality_text(song: dict) -> str:
+    return (
+        f"{song.get('bitrate', 0) / 1000:.0f} kbps {song.get('bitrate_mode', '')} · "
+        f"{song.get('sample_rate', 0) / 1000:g} kHz · {song.get('channels', 0)} ch · "
+        f"{song.get('size', 0) / (1024 * 1024):.2f} MiB · {song.get('duration', 0):.1f} s"
+    )
+
+
 def digest_range(path: Path, start: int = 0, end: int | None = None) -> str:
     digest = hashlib.sha256()
     end = path.stat().st_size if end is None else end
@@ -61,6 +79,10 @@ def inspect_mp3(path: Path) -> dict:
         "audio_sha256": digest_range(path, audio.info.frame_offset, end),
         "size": before.st_size,
         "mtime_ns": before.st_mtime_ns,
+        "bitrate": int(audio.info.bitrate or 0),
+        "sample_rate": int(audio.info.sample_rate or 0),
+        "channels": int(audio.info.channels or 0),
+        "bitrate_mode": str(getattr(audio.info, "bitrate_mode", "Unknown")).split(".")[-1],
     }
     after = path.stat()
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
