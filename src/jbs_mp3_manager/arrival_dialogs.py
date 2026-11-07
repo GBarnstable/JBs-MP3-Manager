@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .media import quality_text
-from .naming import suggested_name, validate_name
+from .naming import change_reason, suggested_name, validate_name
 
 
 class RenameOneDialog(QDialog):
@@ -35,9 +35,17 @@ class RenameOneDialog(QDialog):
         self.artist = QLineEdit(proposal["rename_artist"])
         self.title = QLineEdit(proposal["rename_title"])
         self.filename = QLineEdit(proposal["proposed"])
+        self.reason = QLabel()
+        self.reason.setWordWrap(True)
+        self.reason.setTextFormat(Qt.TextFormat.PlainText)
+        self.filename.textChanged.connect(
+            lambda value: self.reason.setText(change_reason(proposal["path"], value))
+        )
+        self.reason.setText(change_reason(proposal["path"], proposal["proposed"]))
         form.addRow("Artist", self.artist)
         form.addRow("Song title", self.title)
         form.addRow("New filename", self.filename)
+        form.addRow("Change", self.reason)
         layout.addLayout(form)
         self.artist.textEdited.connect(self.suggest)
         self.title.textEdited.connect(self.suggest)
@@ -82,42 +90,59 @@ class RenameDialog(QDialog):
         self.resize(1080, 660)
         layout = QVBoxLayout(self)
         note = QLabel(
-            "Names use Artist/Title metadata first, then artist--title filenames where needed. "
+            "Names use Artist/Title metadata first, then filenames with --, - -, or spaced dash separators. "
             "Unchanged filenames are omitted. Only checked rows are renamed. "
-            "Edit proposed names in the table or review songs one by one. "
+            "The reason column explains small changes such as .MP3 to .mp3 or extra spaces. "
             "Categories and song IDs are preserved. Old playlists may need re-export after filenames change."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        self.summary = QLabel()
+        layout.addWidget(self.summary)
         self.table = QTableWidget(len(proposals), 4)
         self.table.setHorizontalHeaderLabels(
-            ["Approve", "Current filename", "Proposed filename (editable)", "Source"]
+            ["Approve", "Current filename", "Proposed filename (editable)", "Change / reason"]
         )
-        self.table.setColumnWidth(0, 65)
-        self.table.setColumnWidth(1, 350)
-        self.table.setColumnWidth(2, 400)
+        self.table.setColumnWidth(0, 85)
+        self.table.setColumnWidth(1, 300)
+        self.table.setColumnWidth(2, 330)
         self.table.horizontalHeader().setStretchLastSection(True)
         for row, proposal in enumerate(proposals):
             check = QTableWidgetItem()
             check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
             check.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(row, 0, check)
-            for column, value in enumerate([proposal["path"], proposal["proposed"], proposal["basis"]], 1):
+            for column, value in enumerate(
+                [
+                    proposal["path"],
+                    proposal["proposed"],
+                    change_reason(proposal["path"], proposal["proposed"]),
+                ],
+                1,
+            ):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 if column != 2:
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.table.setItem(row, column, item)
+            self.table.setRowHidden(row, not bool(proposal["proposed"]))
         layout.addWidget(self.table)
+        self.detail = QPlainTextEdit()
+        self.detail.setReadOnly(True)
+        self.detail.setMaximumHeight(125)
+        layout.addWidget(self.detail)
         actions = QHBoxLayout()
         for label, action in [
             ("Review one by one…", self.review_one_by_one),
-            ("Approve valid suggestions", self.approve_valid),
-            ("Clear approvals", self.clear),
+            ("Select all", self.approve_valid),
+            ("Clear all", self.clear),
         ]:
             button = QPushButton(label)
             button.clicked.connect(action)
             actions.addWidget(button)
+        self.missing_button = QPushButton()
+        self.missing_button.clicked.connect(lambda: self.review_one_by_one(missing_only=True))
+        actions.addWidget(self.missing_button)
         layout.addLayout(actions)
         self.box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel
@@ -126,23 +151,85 @@ class RenameDialog(QDialog):
         self.box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.accept)
         self.box.rejected.connect(self.reject)
         layout.addWidget(self.box)
+        self.table.currentCellChanged.connect(self.show_details)
+        self.table.itemChanged.connect(self.row_changed)
+        self.update_summary()
+        first = next((row for row in range(self.table.rowCount()) if not self.table.isRowHidden(row)), None)
+        if first is not None:
+            self.table.setCurrentCell(first, 1)
+        else:
+            self.detail.setPlainText(
+                "These files do not have enough artist/title information for a proposed filename. "
+                "Choose Enter missing artist/title to review them. No filename is guessed."
+            )
         if auto_review and proposals:
             QTimer.singleShot(0, self.review_one_by_one)
 
+    def update_summary(self):
+        missing = sum(not self.table.item(row, 2).text().strip() for row in range(self.table.rowCount()))
+        approved = len(self.approved())
+        self.summary.setText(
+            f"{self.table.rowCount() - missing:,} proposed filenames \u00b7 {approved:,} approved \u00b7 "
+            f"{missing} {'needs' if missing == 1 else 'need'} artist/title details (not shown in the table)"
+        )
+        self.missing_button.setText(f"Enter missing artist/title ({missing})\u2026")
+        self.missing_button.setEnabled(bool(missing))
+        apply = self.box.button(QDialogButtonBox.StandardButton.Apply)
+        apply.setText(f"Rename approved files ({approved:,})")
+        apply.setEnabled(bool(approved))
+
+    def row_changed(self, item):
+        if item.column() == 2:
+            row = item.row()
+            reason = change_reason(self.proposals[row]["path"], item.text().strip())
+            self.table.item(row, 3).setText(reason)
+            self.table.item(row, 3).setToolTip(reason)
+            self.table.item(row, 2).setToolTip(item.text())
+            self.table.setRowHidden(row, not bool(item.text().strip()))
+            if not item.text().strip():
+                self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+            self.show_details(row)
+        self.update_summary()
+
+    def show_details(self, row, *_):
+        if not 0 <= row < len(self.proposals):
+            return
+        item = self.proposals[row]
+        proposed = self.table.item(row, 2).text()
+        reason = change_reason(item["path"], proposed)
+        text = (
+            f"Current: {item['path']}\nProposed: {proposed or '(needs artist/title details)'}\n"
+            f"Change: {reason}\nSource: {item['basis']}"
+        )
+        if "spac" in reason.casefold():
+            text += (
+                "\nSpaces shown as \u00b7: "
+                + item["path"].replace(" ", "\u00b7")
+                + "\nProposed spaces: "
+                + proposed.replace(" ", "\u00b7")
+            )
+        self.detail.setPlainText(text)
+
     def approve_valid(self):
-        for row in range(self.table.rowCount()):
-            try:
-                validate_name(self.table.item(row, 2).text())
-                self.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
-            except ValueError:
-                pass
+        with QSignalBlocker(self.table):
+            for row in range(self.table.rowCount()):
+                try:
+                    validate_name(self.table.item(row, 2).text())
+                    self.table.item(row, 0).setCheckState(Qt.CheckState.Checked)
+                except ValueError:
+                    self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.update_summary()
 
     def clear(self):
-        for row in range(self.table.rowCount()):
-            self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        with QSignalBlocker(self.table):
+            for row in range(self.table.rowCount()):
+                self.table.item(row, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.update_summary()
 
-    def review_one_by_one(self):
+    def review_one_by_one(self, checked=False, *, missing_only=False):
         for row, proposal in enumerate(self.proposals):
+            if missing_only and self.table.item(row, 2).text().strip():
+                continue
             if self.table.item(row, 0).checkState() == Qt.CheckState.Checked:
                 continue
             dialog = RenameOneDialog({**proposal, "proposed": self.table.item(row, 2).text()}, self)

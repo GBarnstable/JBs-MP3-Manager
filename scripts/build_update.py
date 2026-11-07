@@ -31,7 +31,7 @@ def main():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
     (args.output / "UPDATE_INSTRUCTIONS.txt").write_text(
-        "UPDATE AN EXISTING VERSION 0.3 APPLICATION TO 0.4.1\n\n"
+        "UPDATE AN EXISTING VERSION 0.3 APPLICATION TO 0.4.2\n\n"
         "1. Close JB's MP3 Manager.\n"
         "2. Open the ZIP and copy ALL its contents into your existing 0.3 application folder,\n"
         "   the folder containing JBs-MP3-Manager.exe. Accept replacing existing files.\n"

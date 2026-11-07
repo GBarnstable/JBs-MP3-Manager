@@ -70,6 +70,89 @@ def test_filename_fallback_needs_review_and_missing_values_are_not_invented(libr
     assert any(not item["proposed"] for item in proposals(library))
 
 
+@pytest.mark.parametrize(
+    "old_name,new_name,reason",
+    [
+        ("Artist--A Song.MP3", "Artist--A Song.mp3", "Extension .MP3"),
+        ("Artist--A Song .mp3", "Artist--A Song.mp3", "extra spaces"),
+        ("Performer, Alex - - A Song.mp3", "Performer, Alex--A Song.mp3", "separator"),
+        ("Anne-Marie - A Song.mp3", "Anne-Marie--A Song.mp3", "separator"),
+        ("Artist - Guest -- A Song.mp3", "Artist - Guest--A Song.mp3", "spaces"),
+        ("The All-American Band--A Song.Mp3", "All-American Band, The--A Song.mp3", "leading The"),
+    ],
+)
+def test_filename_variants_have_explained_proposals_and_rename_without_audio_changes(
+    library, old_name, new_name, reason
+):
+    song = library.songs()[0]
+    library.path(song).rename(library.root / old_name)
+    library.scan()
+    before = (library.root / old_name).read_bytes()
+    item = proposals(library, [song["id"]])[0]
+    assert item["proposed"] == new_name
+    assert reason in item["reason"]
+    rename_files(library, [{"id": song["id"], "name": item["proposed"], "sha256": item["sha256"]}])
+    assert (library.root / new_name).read_bytes() == before
+    assert library.song(song["id"])["path"] == new_name
+    assert proposals(library, [song["id"]]) == []
+
+
+def test_missing_filename_details_are_separate_and_never_bulk_approved(qapp, library, monkeypatch):
+    items = proposals(library)
+    dialog = RenameDialog(items)
+    assert all(dialog.table.isRowHidden(row) for row in range(dialog.table.rowCount()))
+    assert "3 need artist/title details" in dialog.summary.text()
+    dialog.approve_valid()
+    assert dialog.approved() == []
+
+    class EnterDetails(RenameOneDialog):
+        def exec(self):
+            self.artist.setText("The Example Band")
+            self.title.setText("A Song " + str(self.parent().proposals.index(self.proposal)))
+            self.suggest()
+            return self.DialogCode.Accepted
+
+        def __init__(self, proposal, parent):
+            super().__init__(proposal, parent)
+            self.proposal = next(p for p in parent.proposals if p["id"] == proposal["id"])
+
+    monkeypatch.setattr("jbs_mp3_manager.arrival_dialogs.RenameOneDialog", EnterDetails)
+    dialog.review_one_by_one(missing_only=True)
+    assert len(dialog.approved()) == 3
+    assert all(not dialog.table.isRowHidden(row) for row in range(dialog.table.rowCount()))
+    assert "0 need artist/title details" in dialog.summary.text()
+    assert all(item["name"].startswith("Example Band, The--A Song") for item in dialog.approved())
+    dialog.close()
+
+
+def test_select_all_handles_large_batches_without_approving_missing_names(qapp):
+    from PySide6.QtWidgets import QPushButton
+
+    items = [
+        {
+            "id": str(i),
+            "path": f"Artist--Song {i}.MP3",
+            "proposed": f"Artist--Song {i}.mp3",
+            "sha256": "reviewed",
+            "basis": "Filename",
+            "rename_artist": "Artist",
+            "rename_title": f"Song {i}",
+        }
+        for i in range(1800)
+    ]
+    items.append({**items[0], "id": "missing", "path": "Unknown.mp3", "proposed": ""})
+    dialog = RenameDialog(items)
+    buttons = {button.text(): button for button in dialog.findChildren(QPushButton)}
+    buttons["Select all"].click()
+    assert len(dialog.approved()) == 1800
+    assert "1,800 approved" in dialog.summary.text()
+    assert all(item["id"] != "missing" for item in dialog.approved())
+    buttons["Clear all"].click()
+    assert dialog.approved() == []
+    assert "0 approved" in dialog.summary.text()
+    dialog.close()
+
+
 def test_rename_collision_is_rejected_without_overwriting(library):
     first, second = library.songs()[:2]
     original = library.path(second).read_bytes()

@@ -7,6 +7,43 @@ from pathlib import Path
 from .fileops import _batch, _execute, _original_path
 
 
+def filename_parts(filename):
+    """Recognize explicit separators without splitting hyphenated artist names."""
+    stem = Path(filename).stem
+    parts = stem.split("--", 1)
+    if len(parts) != 2:
+        parts = re.split(r"\s+-\s*-\s+|\s+[-\u2013\u2014]\s+", stem, maxsplit=1)
+    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ("", "")
+
+
+def change_reason(current, proposed):
+    if not proposed:
+        return "Needs artist/title details"
+    old, new = Path(current), Path(proposed)
+    reasons = []
+    if old.suffix != new.suffix:
+        reasons.append(f"Extension {old.suffix} \u2192 {new.suffix}")
+    if old.stem != new.stem:
+        artist, title = filename_parts(current)
+        if (
+            artist
+            and filename_artist(artist) != artist
+            and new.stem.startswith(filename_artist(artist) + "--")
+        ):
+            reasons.append("Move leading The to artist suffix")
+        elif old.stem.casefold() == new.stem.casefold():
+            reasons.append("Change letter case")
+        elif artist and "--" not in old.stem and new.stem == artist + "--" + title:
+            reasons.append("Normalize artist/title separator")
+        elif re.sub(r"\s+", "", old.stem) == re.sub(r"\s+", "", new.stem):
+            reasons.append("Remove extra spaces")
+        elif artist and new.stem == artist + "--" + title:
+            reasons.append("Normalize artist/title separator or spacing")
+        else:
+            reasons.append("Update artist/title spelling or filename characters")
+    return "; ".join(reasons) or "No filename change"
+
+
 def filename_artist(artist):
     artist = artist.strip()
     if artist.casefold() == "the the":
@@ -53,10 +90,9 @@ def proposals(library, song_ids=None):
     for song in songs:
         if song["missing"]:
             continue
-        stem = Path(song["path"]).stem
-        parts = stem.split("--", 1)
-        artist = song["artist"].strip() or (parts[0].strip() if len(parts) == 2 else "")
-        title = song["title"].strip() or (parts[1].strip() if len(parts) == 2 else "")
+        fallback_artist, fallback_title = filename_parts(song["path"])
+        artist = song["artist"].strip() or fallback_artist
+        title = song["title"].strip() or fallback_title
         name = suggested_name(artist, title)
         if name == Path(song["path"]).name:
             continue
@@ -66,6 +102,7 @@ def proposals(library, song_ids=None):
                 "rename_artist": artist,
                 "rename_title": title,
                 "proposed": name,
+                "reason": change_reason(song["path"], name),
                 "basis": "Metadata"
                 if song["artist"].strip() and song["title"].strip()
                 else "Filename fallback / review needed",
