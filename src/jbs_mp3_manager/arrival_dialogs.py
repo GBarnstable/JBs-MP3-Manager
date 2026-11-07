@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -104,6 +105,8 @@ class RenameDialog(QDialog):
         self.summary = QLabel()
         layout.addWidget(self.summary)
         self.table = QTableWidget(len(proposals), 4)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setHorizontalHeaderLabels(
             ["Approve", "Current filename", "Proposed filename (editable)", "Change / reason"]
         )
@@ -113,7 +116,9 @@ class RenameDialog(QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         for row, proposal in enumerate(proposals):
             check = QTableWidgetItem()
-            check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+            check.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable
+            )
             check.setData(Qt.ItemDataRole.UserRole, proposal["id"])
             check.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(row, 0, check)
@@ -136,6 +141,16 @@ class RenameDialog(QDialog):
         self.detail.setReadOnly(True)
         self.detail.setMaximumHeight(125)
         layout.addWidget(self.detail)
+        group_actions = QHBoxLayout()
+        self.selection_label = QLabel("Shift selects a range; Ctrl selects separate rows.")
+        group_actions.addWidget(self.selection_label, 1)
+        self.approve_selected_button = QPushButton("Approve selected")
+        self.approve_selected_button.clicked.connect(lambda: self.set_selected_approval(True))
+        self.unapprove_selected_button = QPushButton("Unapprove selected")
+        self.unapprove_selected_button.clicked.connect(lambda: self.set_selected_approval(False))
+        group_actions.addWidget(self.approve_selected_button)
+        group_actions.addWidget(self.unapprove_selected_button)
+        layout.addLayout(group_actions)
         actions = QHBoxLayout()
         for label, action in [
             ("Review one by one…", self.review_one_by_one),
@@ -158,6 +173,7 @@ class RenameDialog(QDialog):
         layout.addWidget(self.box)
         self.table.currentCellChanged.connect(self.show_details)
         self.table.itemChanged.connect(self.row_changed)
+        self.table.selectionModel().selectionChanged.connect(self.update_selection)
         self.table.model().layoutChanged.connect(self.refresh_visibility)
         self.table.setSortingEnabled(True)
         self.table.sortItems(3, Qt.SortOrder.AscendingOrder)
@@ -172,6 +188,7 @@ class RenameDialog(QDialog):
             )
         if auto_review and proposals:
             QTimer.singleShot(0, self.review_one_by_one)
+        self.update_selection()
 
     def proposal_at(self, row):
         return self.by_id[self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)]
@@ -191,6 +208,34 @@ class RenameDialog(QDialog):
         for row in range(self.table.rowCount()):
             self.table.setRowHidden(row, not bool(self.table.item(row, 2).text().strip()))
         self.show_details(self.table.currentRow())
+        self.update_selection()
+
+    def selected_rows(self):
+        return [
+            index.row()
+            for index in self.table.selectionModel().selectedRows()
+            if not self.table.isRowHidden(index.row())
+        ]
+
+    def update_selection(self, *_):
+        count = len(self.selected_rows())
+        self.selection_label.setText(f"{count:,} selected · Shift: range · Ctrl: separate rows")
+        self.approve_selected_button.setEnabled(bool(count))
+        self.unapprove_selected_button.setEnabled(bool(count))
+
+    def set_selected_approval(self, approve):
+        rows = self.selected_rows()
+        with self.stable_rows(), QSignalBlocker(self.table):
+            for row in rows:
+                if approve:
+                    try:
+                        validate_name(self.table.item(row, 2).text())
+                    except ValueError:
+                        continue
+                self.table.item(row, 0).setCheckState(
+                    Qt.CheckState.Checked if approve else Qt.CheckState.Unchecked
+                )
+        self.update_summary()
 
     def update_summary(self):
         missing = sum(not self.table.item(row, 2).text().strip() for row in range(self.table.rowCount()))
@@ -284,12 +329,6 @@ class RenameDialog(QDialog):
         ]
 
     def accept(self):
-        try:
-            for proposal in self.approved():
-                validate_name(proposal["name"])
-        except ValueError as error:
-            QMessageBox.warning(self, "Filename needs editing", str(error))
-            return
         if self.approved():
             super().accept()
 

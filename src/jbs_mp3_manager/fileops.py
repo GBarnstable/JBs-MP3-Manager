@@ -35,6 +35,13 @@ def _restore(library, batch, manifest):
         if not stage.exists() and original.exists():
             if digest_range(original) != move["sha256"]:
                 raise ValueError("An original file changed after interruption.")
+            if (
+                target
+                and os.name == "nt"
+                and os.path.normcase(str(original)) == os.path.normcase(str(target))
+            ):
+                os.rename(target, stage)
+                os.rename(stage, original)
             continue  # Not moved yet, or already restored during an earlier recovery.
         if not stage.exists() and target and target.exists():
             if digest_range(target) != move["sha256"]:
@@ -43,6 +50,10 @@ def _restore(library, batch, manifest):
                 raise ValueError("Recovery will not overwrite an existing original filename.")
             os.rename(target, stage)
         if stage.exists():
+            if target and target.exists() and os.path.samefile(stage, target):
+                if digest_range(stage) != move["sha256"]:
+                    raise ValueError("An interrupted rename changed after linking its destination.")
+                target.unlink()
             if original.exists():
                 raise ValueError("Recovery found an occupied original filename.")
             if digest_range(stage) != move["sha256"]:
@@ -62,6 +73,22 @@ def recover_actions(library):
         manifest = json.loads(path.read_text("utf-8"))
         if manifest["state"] in ("committed", "rolled_back"):
             continue
+        if manifest["kind"] == "rename-independent":
+            active = path.parent / "active.json"
+            if active.is_symlink():
+                raise ValueError("A rename intent cannot be a symbolic link.")
+            if active.exists():
+                index = json.loads(active.read_text("utf-8"))["index"]
+                move = manifest["moves"][index]
+                if not library.db.execute(
+                    "SELECT 1 FROM file_actions WHERE id=?", (move["action_id"],)
+                ).fetchone():
+                    _restore(library, path.parent, {"moves": [move], "installed": []})
+                active.unlink()
+            manifest["state"] = "committed"
+            manifest["interrupted"] = True
+            _save(path.parent, manifest)
+            continue
         if library.db.execute("SELECT 1 FROM file_actions WHERE id=?", (path.parent.name,)).fetchone():
             manifest["state"] = "committed"
         else:
@@ -70,11 +97,12 @@ def recover_actions(library):
         _save(path.parent, manifest)
 
 
-def _batch(library, kind, sources):
+def _batch(library, kind, sources, *, verify_sources=True):
     recover_actions(library)
-    for song, expected in sources:
-        if digest_range(_original_path(library, song["path"])) != expected:
-            raise ValueError(f"File changed since review: {song['path']}")
+    if verify_sources:
+        for song, expected in sources:
+            if digest_range(_original_path(library, song["path"])) != expected:
+                raise ValueError(f"File changed since review: {song['path']}")
     root = library.data / "file-actions"
     if root.is_symlink() or library.data.is_symlink():
         raise ValueError("File-action backups cannot use symbolic links.")
@@ -93,6 +121,92 @@ def _batch(library, kind, sources):
             }
         )
     return batch, manifest
+
+
+def rename_independently(library, plans, progress=lambda message: None):
+    """One snapshot, with an independent durable transaction for each approved file."""
+    batch, manifest = _batch(
+        library, "rename-independent", [(song, sha) for song, _, sha in plans], verify_sources=False
+    )
+    for index, (move, (song, target, _)) in enumerate(zip(manifest["moves"], plans)):
+        move.update(target=target, song_id=song["id"], action_id=f"{batch.name}:{index}")
+    # Older applications restore an entire batch and cannot recover independent commits.
+    # Keep them from opening a library that contains these journals.
+    with library.db:
+        library.db.execute("PRAGMA user_version=2")
+    _save(batch, manifest)
+    active = batch / "active.json"
+    result = {"renamed": 0, "errors": [], "warnings": [], "backup_folder": str(batch)}
+    for index, move in enumerate(manifest["moves"]):
+        intent = False
+        recovered = True
+        try:
+            progress(f"Renaming {index + 1}/{len(plans)}: {move['original']}")
+            library.db.execute("BEGIN IMMEDIATE")
+            source = _original_path(library, move["original"])
+            stage = _archive_path(batch, move["archive"])
+            target = _original_path(library, move["target"])
+            if digest_range(source) != move["sha256"]:
+                raise ValueError("File changed since review; rescan and review it again.")
+            atomic_text(active, json.dumps({"index": index}))
+            intent = True
+            os.rename(source, stage)
+            if os.name == "nt":
+                os.rename(stage, target)  # Windows rename refuses to overwrite an occupied destination.
+            else:
+                os.link(stage, target, follow_symlinks=False)  # Atomically refuse overwrites on POSIX too.
+                stage.unlink()
+            library.db.execute("UPDATE songs SET path=? WHERE id=?", (move["target"], move["song_id"]))
+            library.db.execute(
+                "UPDATE import_resolutions SET keeper_path=? WHERE song_id=?",
+                (move["target"], move["song_id"]),
+            )
+            library.db.execute("DELETE FROM new_arrivals WHERE song_id=?", (move["song_id"],))
+            library.db.execute("INSERT INTO file_actions VALUES (?)", (move["action_id"],))
+            library.db.commit()
+        except BaseException as error:
+            library.db.rollback()
+            if library.db.execute("SELECT 1 FROM file_actions WHERE id=?", (move["action_id"],)).fetchone():
+                result["renamed"] += 1
+                result["warnings"].append(f"Rename committed for {move['original']}: {error}")
+            else:
+                if intent:
+                    try:
+                        _restore(library, batch, {"moves": [move], "installed": []})
+                    except Exception as recovery_error:
+                        recovered = False
+                        result["warnings"].append(f"Recovery needs attention in {batch}: {recovery_error}")
+                result["errors"].append(
+                    {"path": move["original"], "target": move["target"], "error": str(error)}
+                )
+            if not isinstance(error, Exception):
+                raise
+        else:
+            result["renamed"] += 1
+        if not recovered:
+            manifest["state"] = "needs_recovery"
+            for remaining in manifest["moves"][index + 1 :]:
+                result["errors"].append(
+                    {
+                        "path": remaining["original"],
+                        "target": remaining["target"],
+                        "error": "Not attempted because an interrupted file move needs recovery.",
+                    }
+                )
+            break
+        if intent:
+            try:
+                active.unlink(missing_ok=True)
+            except OSError as error:
+                result["warnings"].append(f"Could not remove completed rename intent: {error}")
+    else:
+        manifest["state"] = "committed"
+    manifest["result"] = result
+    try:
+        _save(batch, manifest)
+    except OSError as error:
+        result["warnings"].append(f"Final rename journal write failed: {error}")
+    return result
 
 
 def purge_staged(library, batch, manifest):

@@ -747,12 +747,7 @@ class MainWindow(QMainWindow):
                 self.stop_for_file_changes()
                 self.run_job(
                     lambda library, progress: rename_files(library, approved, progress),
-                    lambda result: QMessageBox.information(
-                        self,
-                        "Filename review complete",
-                        f"Renamed {result['renamed']} files. Categories and metadata were preserved.\n\n"
-                        "Re-export older playlists that reference changed filenames.",
-                    ),
+                    lambda result: self.show_report("Filename review complete", result),
                 )
 
         def prepare(library, progress):
@@ -1108,7 +1103,20 @@ class MainWindow(QMainWindow):
     def show_report(self, title, report):
         box = QMessageBox(self)
         box.setWindowTitle(title)
-        if "updated" in report and "copied" not in report:
+        if "renamed" in report:
+            box.setText(
+                f"Renamed: {report['renamed']} · Already correct: {report.get('unchanged', 0)}"
+                f" · Failed / not attempted: {len(report.get('errors', []))}"
+                + (f" · Warnings: {len(report['warnings'])}" if report.get("warnings") else "")
+            )
+            info = (
+                "Completed renames were kept. Categories and metadata are preserved. "
+                "Show Details lists any failed files and warnings. Re-export playlists that use old filenames."
+            )
+            if report.get("report_path"):
+                info += f"\n\nSaved report: {report['report_path']}"
+            box.setInformativeText(info)
+        elif "updated" in report and "copied" not in report:
             box.setText(f"Updated: {report['updated']} · Errors: {len(report.get('errors', []))}")
         elif "copied" in report:
             box.setText(f"Copied: {report['copied']} · Errors: {len(report.get('errors', []))}")

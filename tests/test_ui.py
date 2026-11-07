@@ -45,6 +45,46 @@ def test_import_and_metadata_dialogs_construct(qapp, library):
     assert dialogs[-1].values() == {}  # Batch edits do not implicitly clear any fields.
 
 
+def test_rename_shift_ctrl_row_selection_can_approve_and_unapprove_a_group(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from jbs_mp3_manager.arrival_dialogs import RenameDialog
+
+    items = [
+        {
+            "id": str(i),
+            "path": f"Artist--Song {i}.MP3",
+            "proposed": f"Artist--Song {i}.mp3",
+            "sha256": "reviewed",
+            "basis": "Filename",
+            "rename_artist": "Artist",
+            "rename_title": f"Song {i}",
+        }
+        for i in range(5)
+    ]
+    dialog = RenameDialog(items)
+    dialog.table.sortItems(1, Qt.SortOrder.AscendingOrder)
+    dialog.show()
+    qapp.processEvents()
+
+    def click(row, modifier=Qt.KeyboardModifier.NoModifier):
+        point = dialog.table.visualItemRect(dialog.table.item(row, 1)).center()
+        QTest.mouseClick(dialog.table.viewport(), Qt.MouseButton.LeftButton, modifier, point)
+
+    click(0)
+    click(2, Qt.KeyboardModifier.ShiftModifier)
+    click(4, Qt.KeyboardModifier.ControlModifier)
+    click(1, Qt.KeyboardModifier.ControlModifier)
+    dialog.approve_selected_button.click()
+    assert {item["id"] for item in dialog.approved()} == {"0", "2", "4"}
+    dialog.table.sortItems(1, Qt.SortOrder.DescendingOrder)
+    dialog.approve_valid()
+    dialog.unapprove_selected_button.click()
+    assert {item["id"] for item in dialog.approved()} == {"1", "3"}
+    dialog.close()
+
+
 @pytest.mark.parametrize("auto_review", [False, True])
 def test_correctly_named_song_needs_no_dialog_and_new_review_does_not_repeat(
     qapp, library, monkeypatch, auto_review

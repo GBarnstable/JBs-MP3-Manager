@@ -75,7 +75,7 @@ def test_filename_fallback_needs_review_and_missing_values_are_not_invented(libr
     [
         ("Artist--A Song.MP3", "Artist--A Song.mp3", "Extension .MP3"),
         ("Artist--A Song .mp3", "Artist--A Song.mp3", "extra spaces"),
-        ("Performer, Alex - - A Song.mp3", "Performer, Alex--A Song.mp3", "separator"),
+        ("Performer, Alex - - A Song.mp3", "Alex Performer--A Song.mp3", "separator"),
         ("Anne-Marie - A Song.mp3", "Anne-Marie--A Song.mp3", "separator"),
         ("Artist - Guest -- A Song.mp3", "Artist - Guest--A Song.mp3", "spaces"),
         ("The All-American Band--A Song.Mp3", "All-American Band, The--A Song.mp3", "leading The"),
@@ -169,8 +169,8 @@ def test_select_all_handles_large_batches_without_approving_missing_names(qapp):
             "Alex Performer--A Song.mp3",
             "Performer, Alexander",
             "A Song",
-            "Performer, Alexander--A Song.mp3",
-            True,
+            None,
+            False,
         ),
         (
             "The Example Band--A Song.mp3",
@@ -190,8 +190,8 @@ def test_select_all_handles_large_batches_without_approving_missing_names(qapp):
             "Alex Performer Jr.--A Song.mp3",
             "Performer, Alex, Jr.",
             "A Song",
-            "Performer, Alex, Jr.--A Song.mp3",
-            True,
+            None,
+            False,
         ),
     ],
 )
@@ -275,8 +275,9 @@ def test_one_by_one_review_visits_each_record_once_when_edits_resort_rows(qapp, 
 def test_rename_collision_is_rejected_without_overwriting(library):
     first, second = library.songs()[:2]
     original = library.path(second).read_bytes()
-    with pytest.raises(ValueError, match="already exists"):
-        rename_files(library, [{"id": first["id"], "name": second["path"], "sha256": first["sha256"]}])
+    result = rename_files(library, [{"id": first["id"], "name": second["path"], "sha256": first["sha256"]}])
+    assert result["renamed"] == 0
+    assert "already exists" in result["errors"][0]["error"]
     assert library.path(second).read_bytes() == original
 
 
@@ -287,8 +288,9 @@ def test_rename_rollback_restores_file_on_sql_failure(library):
         "CREATE TRIGGER reject_rename BEFORE UPDATE OF path ON songs BEGIN "
         "SELECT RAISE(ABORT,'test failure'); END;"
     )
-    with pytest.raises(sqlite3.IntegrityError):
-        rename_files(library, [{"id": song["id"], "name": "Renamed.mp3", "sha256": song["sha256"]}])
+    result = rename_files(library, [{"id": song["id"], "name": "Renamed.mp3", "sha256": song["sha256"]}])
+    assert result["renamed"] == 0
+    assert "test failure" in result["errors"][0]["error"]
     assert library.path(song).read_bytes() == original
     assert not (library.root / "Renamed.mp3").exists()
 
@@ -298,6 +300,154 @@ def test_rename_case_only_works_and_does_not_drop_id(library):
     rename_files(library, [{"id": song["id"], "name": "alpha.mp3", "sha256": song["sha256"]}])
     assert library.song(song["id"])["path"] == "alpha.mp3"
     assert any(p.name == "alpha.mp3" for p in library.root.iterdir())
+
+
+@pytest.mark.parametrize("failure", ["occupied", "database", "changed", "invalid"])
+def test_one_failed_rename_does_not_undo_or_stop_other_files(library, failure):
+    songs = library.songs()
+    before = {song["id"]: library.path(song).read_bytes() for song in songs}
+    category = library.add_category("Favorites")
+    library.assign([song["id"] for song in songs], [category])
+    approved = [
+        {"id": song["id"], "name": f"Renamed {i}.mp3", "sha256": song["sha256"]}
+        for i, song in enumerate(songs)
+    ]
+    if failure == "occupied":
+        approved[1]["name"] = songs[2]["path"]
+    elif failure == "database":
+        library.db.executescript(
+            f"CREATE TRIGGER reject_one BEFORE UPDATE OF path ON songs WHEN OLD.id='{songs[1]['id']}' BEGIN SELECT RAISE(ABORT,'one rejected'); END;"
+        )
+    elif failure == "changed":
+        approved[1]["sha256"] = "stale-review"
+    else:
+        approved[1]["name"] = "Invalid:name.mp3"
+    result = rename_files(library, approved)
+    assert result["renamed"] == 2
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["path"] == songs[1]["path"]
+    assert library.song(songs[1]["id"])["path"] == songs[1]["path"]
+    assert library.song(songs[0]["id"])["path"] == "Renamed 0.mp3"
+    assert library.song(songs[2]["id"])["path"] == "Renamed 2.mp3"
+    assert len(list(Path(result["backup_folder"]).glob("*.sqlite3"))) == 1
+    assert json.loads(Path(result["report_path"]).read_text())["renamed"] == 2
+    for song in songs:
+        assert library.path(library.song(song["id"])).read_bytes() == before[song["id"]]
+    assert len(library.songs(category)) == 3
+    assert library.scan()["added"] == 0
+    assert not library.songs("missing")
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_interrupted_independent_batch_keeps_committed_files_and_recovers_only_active_file(library, linked):
+    songs = library.songs()
+    before = {song["id"]: library.path(song).read_bytes() for song in songs}
+    batch, manifest = _batch(library, "rename-independent", [(song, song["sha256"]) for song in songs])
+    for i, move in enumerate(manifest["moves"]):
+        move.update(target=f"After {i}.mp3", song_id=songs[i]["id"], action_id=f"{batch.name}:{i}")
+    _save(batch, manifest)
+    first = manifest["moves"][0]
+    (library.root / first["original"]).rename(library.root / first["target"])
+    with library.db:
+        library.db.execute("UPDATE songs SET path=? WHERE id=?", (first["target"], first["song_id"]))
+        library.db.execute("INSERT INTO file_actions VALUES (?)", (first["action_id"],))
+    active = manifest["moves"][1]
+    stage = batch / active["archive"]
+    (library.root / active["original"]).rename(stage)
+    if linked:
+        os.link(stage, library.root / active["target"])
+    else:
+        stage.rename(library.root / active["target"])
+    (batch / "active.json").write_text(json.dumps({"index": 1}))
+    library.scan()
+    assert library.song(songs[0]["id"])["path"] == "After 0.mp3"
+    assert library.song(songs[1]["id"])["path"] == songs[1]["path"]
+    assert not (library.root / "After 1.mp3").exists()
+    assert not library.songs("missing")
+    for song in songs:
+        assert library.path(library.song(song["id"])).read_bytes() == before[song["id"]]
+
+
+def test_destination_created_during_rename_is_not_overwritten_and_other_files_continue(library, monkeypatch):
+    songs = library.songs()[:2]
+    before = library.path(songs[0]).read_bytes()
+    target = library.root / "Conflict.mp3"
+    operation = "rename" if os.name == "nt" else "link"
+    real_operation = getattr(os, operation)
+
+    def racing_destination(source, destination, *args, **kwargs):
+        if Path(destination) == target and not target.exists():
+            target.write_bytes(b"another file arrived")
+        return real_operation(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(f"jbs_mp3_manager.fileops.os.{operation}", racing_destination)
+    result = rename_files(
+        library,
+        [
+            {"id": songs[0]["id"], "name": "Conflict.mp3", "sha256": songs[0]["sha256"]},
+            {"id": songs[1]["id"], "name": "Success.mp3", "sha256": songs[1]["sha256"]},
+        ],
+    )
+    assert result["renamed"] == 1 and len(result["errors"]) == 1
+    assert target.read_bytes() == b"another file arrived"
+    assert library.path(songs[0]).read_bytes() == before
+    assert library.song(songs[1]["id"])["path"] == "Success.mp3"
+
+
+def test_independent_rename_version_guard_persists_when_library_reopens(library):
+    song = library.songs()[0]
+    rename_files(library, [{"id": song["id"], "name": "New.mp3", "sha256": song["sha256"]}])
+    assert library.db.execute("PRAGMA user_version").fetchone()[0] == 2
+    with Library(library.root) as reopened:
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert reopened.song(song["id"])["path"] == "New.mp3"
+        assert reopened.scan()["added"] == 0
+
+
+def test_failed_case_only_rename_restores_original_spelling(library):
+    song = next(song for song in library.songs() if song["path"] == "Alpha.mp3")
+    library.db.executescript(
+        "CREATE TRIGGER reject_case BEFORE UPDATE OF path ON songs BEGIN SELECT RAISE(ABORT,'rejected'); END;"
+    )
+    result = rename_files(library, [{"id": song["id"], "name": "alpha.mp3", "sha256": song["sha256"]}])
+    assert result["renamed"] == 0 and len(result["errors"]) == 1
+    assert any(path.name == "Alpha.mp3" for path in library.root.iterdir())
+    assert not any(path.name == "alpha.mp3" for path in library.root.iterdir())
+
+
+@pytest.mark.parametrize(
+    "filename,metadata_artist,expected_artist",
+    [
+        ("Performer, Alex - - A Song.MP3", "", "Alex Performer"),
+        (
+            "Sheryl Crow and Shelby Lynne--A Song.MP3",
+            "Crow, Sheryl and Shelby Lynne",
+            "Sheryl Crow and Shelby Lynne",
+        ),
+        (
+            "John Fred & The Playboy Band--A Song.MP3",
+            "Fred, John & The Playboy Band",
+            "John Fred & The Playboy Band",
+        ),
+        ("Crosby Stills and Nash--A Song.MP3", "Crosby, Stills, & Nash", "Crosby Stills and Nash"),
+        ("Jump, Little Children--A Song.MP3", "Jump, Little Children", "Jump, Little Children"),
+        ("Sammy Davis, Jr.--A Song.MP3", "Sammy Davis, Jr.", "Sammy Davis, Jr."),
+    ],
+)
+def test_artist_order_and_other_changes_are_applied_together_without_reversing_collaborations(
+    library, filename, metadata_artist, expected_artist
+):
+    song = library.songs()[0]
+    library.path(song).rename(library.root / filename)
+    library.scan()
+    if metadata_artist:
+        library.edit_metadata([song["id"]], {"artist": metadata_artist})
+    item = proposals(library, [song["id"]])[0]
+    assert item["proposed"] == expected_artist + "--A Song.mp3"
+    assert "Extension .MP3" in item["reason"]
+    if filename.startswith("Performer,"):
+        assert "Artist name order: first name first" in item["reason"]
+        assert "separator" in item["reason"]
 
 
 def test_interrupted_rename_recovers_files_before_scan(library):

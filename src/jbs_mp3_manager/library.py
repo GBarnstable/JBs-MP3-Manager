@@ -78,7 +78,7 @@ class Library:
         self.db.execute("PRAGMA journal_mode=DELETE")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             self.db.close()
             raise ValueError(f"Library version {version} needs a newer application.")
         self.db.executescript("""
@@ -115,7 +115,6 @@ class Library:
             CREATE TABLE IF NOT EXISTS new_arrivals (
                 song_id TEXT PRIMARY KEY REFERENCES songs(id) ON DELETE CASCADE
             );
-            PRAGMA user_version=1;
         """)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(songs)")}
         for name, definition in [
@@ -127,6 +126,7 @@ class Library:
             if name not in columns:
                 self.db.execute(f"ALTER TABLE songs ADD COLUMN {name} {definition}")
         with self.db:
+            self.db.execute(f"PRAGMA user_version={max(1, version)}")
             self.db.execute(
                 "INSERT OR IGNORE INTO settings VALUES ('recursive', ?)", (json.dumps(recursive),)
             )
