@@ -83,7 +83,8 @@ class RenameDialog(QDialog):
         layout = QVBoxLayout(self)
         note = QLabel(
             "Names use Artist/Title metadata first, then artist--title filenames where needed. "
-            "Only checked rows are renamed. Edit proposed names in the table or review songs one by one. "
+            "Unchanged filenames are omitted. Only checked rows are renamed. "
+            "Edit proposed names in the table or review songs one by one. "
             "Categories and song IDs are preserved. Old playlists may need re-export after filenames change."
         )
         note.setWordWrap(True)

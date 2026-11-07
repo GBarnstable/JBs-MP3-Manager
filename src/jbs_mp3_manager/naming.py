@@ -58,6 +58,8 @@ def proposals(library, song_ids=None):
         artist = song["artist"].strip() or (parts[0].strip() if len(parts) == 2 else "")
         title = song["title"].strip() or (parts[1].strip() if len(parts) == 2 else "")
         name = suggested_name(artist, title)
+        if name == Path(song["path"]).name:
+            continue
         result.append(
             {
                 **song,

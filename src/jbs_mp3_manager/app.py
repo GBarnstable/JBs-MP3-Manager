@@ -736,6 +736,10 @@ class MainWindow(QMainWindow):
 
         def loaded(items):
             if not items:
+                if not auto_review:
+                    QMessageBox.information(
+                        self, "Filename review complete", "No proposed filename changes in this selection."
+                    )
                 return
             dialog = RenameDialog(items, self, auto_review=auto_review)
             if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -751,7 +755,20 @@ class MainWindow(QMainWindow):
                     ),
                 )
 
-        self.run_job(lambda library, progress: proposals(library, song_ids), loaded)
+        def prepare(library, progress):
+            items = proposals(library, song_ids)
+            if auto_review:
+                # Duplicate review already ran. Correctly named arrivals need no
+                # filename approval and must not remain in the pending inbox.
+                pending = {item["id"] for item in items}
+                unchanged = set(song_ids or ()) - pending
+                with library.db:
+                    library.db.executemany(
+                        "DELETE FROM new_arrivals WHERE song_id=?", [(song_id,) for song_id in unchanged]
+                    )
+            return items
+
+        self.run_job(prepare, loaded)
 
     def review_new_songs(self, checked=False, *, song_ids=None):
         if not self.library or self.busy:
