@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
@@ -27,6 +28,7 @@ from .naming import (
     build_proposals,
     change_reason,
     filename_components,
+    rename_operations,
     suggested_name,
     validate_name,
 )
@@ -123,6 +125,8 @@ class RenameDialog(QDialog):
         accepted=None,
         use_metadata=True,
         on_mark_correct=None,
+        on_apply=None,
+        on_refresh=None,
     ):
         super().__init__(parent)
         self.proposals = proposals
@@ -130,6 +134,12 @@ class RenameDialog(QDialog):
         self.source_songs = songs if songs is not None else list(proposals)
         self.accepted = dict(accepted or {})
         self.on_mark_correct = on_mark_correct
+        self.on_apply = on_apply
+        self.on_refresh = on_refresh
+        self.busy = False
+        self.last_result = None
+        self.last_error = None
+        self.last_scan = None
         self.setWindowFlags(
             (self.windowFlags() | Qt.WindowType.WindowMaximizeButtonHint)
             & ~Qt.WindowType.WindowContextHelpButtonHint
@@ -200,6 +210,16 @@ class RenameDialog(QDialog):
         self.detail.setReadOnly(True)
         self.detail.setMaximumHeight(125)
         layout.addWidget(self.detail)
+        batch_line = QHBoxLayout()
+        self.batch_status = QLabel("Ready. Apply a batch to refresh the remaining candidates here.")
+        self.batch_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.batch_status.setWordWrap(True)
+        batch_line.addWidget(self.batch_status, 1)
+        self.batch_details = QPushButton("Last batch details…")
+        self.batch_details.setEnabled(False)
+        self.batch_details.clicked.connect(self.show_batch_details)
+        batch_line.addWidget(self.batch_details)
+        layout.addLayout(batch_line)
         group_actions = QHBoxLayout()
         self.selection_label = QLabel("Shift selects a range; Ctrl selects separate rows.")
         group_actions.addWidget(self.selection_label, 1)
@@ -233,15 +253,15 @@ class RenameDialog(QDialog):
         self.box.button(QDialogButtonBox.StandardButton.Cancel).setText("Close")
         self.box.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.accept)
         self.box.rejected.connect(self.reject)
+        self.refresh_button = self.box.addButton("Rescan", QDialogButtonBox.ButtonRole.ActionRole)
+        self.refresh_button.setEnabled(bool(on_refresh))
+        self.refresh_button.clicked.connect(self.request_refresh)
         layout.addWidget(self.box)
         self.table.currentCellChanged.connect(self.show_details)
         self.table.itemChanged.connect(self.row_changed)
         self.table.selectionModel().selectionChanged.connect(self.update_selection)
         self.table.model().layoutChanged.connect(self.refresh_visibility)
-        for index in range(1, self.reason_combo.count()):
-            self.reason_combo.model().item(index).setEnabled(
-                self.use_metadata.isChecked() or not self.reason_combo.itemData(index).startswith("metadata_")
-            )
+        self.sync_reasons()
         self.reason_combo.currentIndexChanged.connect(lambda: self.rebuild())
         self.use_metadata.toggled.connect(lambda: self.rebuild())
         self.show_correct.toggled.connect(lambda: self.rebuild(preserve=True))
@@ -264,14 +284,10 @@ class RenameDialog(QDialog):
         self.update_selection()
 
     def rebuild(self, *, preserve=False):
-        for index in range(1, self.reason_combo.count()):
-            rule = self.reason_combo.itemData(index)
-            self.reason_combo.model().item(index).setEnabled(
-                self.use_metadata.isChecked() or not rule.startswith("metadata_")
-            )
-        if not self.use_metadata.isChecked() and str(self.reason_combo.currentData()).startswith("metadata_"):
-            with QSignalBlocker(self.reason_combo):
-                self.reason_combo.setCurrentIndex(0)
+        old_reason = self.reason_combo.currentData()
+        self.sync_reasons()
+        if old_reason != self.reason_combo.currentData():
+            preserve = False
         previous = (
             {
                 self.proposal_at(row)["id"]: (
@@ -328,6 +344,26 @@ class RenameDialog(QDialog):
                 "No matching proposals. Change the reason or metadata option, or show marked-correct files to review exceptions."
             )
 
+    def sync_reasons(self):
+        current = self.reason_combo.currentData()
+        counts = {}
+        for song in self.source_songs:
+            if song.get("missing"):
+                continue
+            mark = self.accepted.get(song["id"])
+            if mark and (mark["path"], mark["audio_hash"]) == (song["path"], song.get("audio_sha256", "")):
+                continue
+            for rule in rename_operations(song, use_metadata=self.use_metadata.isChecked()):
+                counts[rule] = counts.get(rule, 0) + 1
+        with QSignalBlocker(self.reason_combo):
+            self.reason_combo.clear()
+            self.reason_combo.addItem("All suggested changes", None)
+            for rule, label in RENAME_RULES.items():
+                if counts.get(rule):
+                    self.reason_combo.addItem(f"{label} only ({counts[rule]:,})", rule)
+            index = self.reason_combo.findData(current)
+            self.reason_combo.setCurrentIndex(max(0, index))
+
     def proposal_at(self, row):
         return self.by_id[self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)]
 
@@ -362,9 +398,9 @@ class RenameDialog(QDialog):
     def update_selection(self, *_):
         count = len(self.selected_rows())
         self.selection_label.setText(f"{count:,} selected · Shift: range · Ctrl: separate rows")
-        self.approve_selected_button.setEnabled(bool(count))
-        self.unapprove_selected_button.setEnabled(bool(count))
-        self.mark_correct_button.setEnabled(bool(count))
+        self.approve_selected_button.setEnabled(bool(count) and not self.busy)
+        self.unapprove_selected_button.setEnabled(bool(count) and not self.busy)
+        self.mark_correct_button.setEnabled(bool(count) and not self.busy)
         all_correct = bool(count) and all(
             self.proposal_at(row).get("accepted") for row in self.selected_rows()
         )
@@ -418,10 +454,10 @@ class RenameDialog(QDialog):
             f"{missing} {'needs' if missing == 1 else 'need'} artist/title details"
         )
         self.missing_button.setText(f"Enter missing artist/title ({missing})\u2026")
-        self.missing_button.setEnabled(bool(missing))
+        self.missing_button.setEnabled(bool(missing) and not self.busy)
         apply = self.box.button(QDialogButtonBox.StandardButton.Apply)
         apply.setText(f"Rename approved files ({approved:,})")
-        apply.setEnabled(bool(approved))
+        apply.setEnabled(bool(approved) and not self.busy)
 
     def row_changed(self, item):
         if item.column() == 2:
@@ -523,8 +559,102 @@ class RenameDialog(QDialog):
         ]
 
     def accept(self):
-        if self.approved():
+        approved = self.approved()
+        if self.busy or not approved:
+            return
+        if not self.on_apply:
             super().accept()
+            return
+        self.set_busy(True)
+        self.batch_status.setText("Renaming approved files, then rescanning…")
+        try:
+            self.on_apply(approved)
+        except Exception as error:
+            self.fail_action(str(error))
+
+    def request_refresh(self):
+        if self.busy or not self.on_refresh:
+            return
+        self.set_busy(True)
+        self.batch_status.setText("Rescanning library…")
+        try:
+            self.on_refresh()
+        except Exception as error:
+            self.fail_action(str(error))
+
+    def set_busy(self, busy):
+        self.busy = busy
+        for widget in [
+            self.table,
+            self.reason_combo,
+            self.use_metadata,
+            self.show_correct,
+            self.show_missing,
+            *self.findChildren(QPushButton),
+        ]:
+            widget.setEnabled(not busy)
+        if not busy:
+            self.update_selection()
+            self.update_summary()
+            self.refresh_button.setEnabled(bool(self.on_refresh))
+            self.batch_details.setEnabled(bool(self.last_result or self.last_error or self.last_scan))
+
+    def show_progress(self, message):
+        if self.busy:
+            self.batch_status.setText(message)
+
+    def complete_action(self, context):
+        self.source_songs = context["songs"]
+        self.accepted = context["accepted"]
+        self.last_error = context.get("scan_error")
+        self.last_scan = context.get("scan")
+        result = context.get("result")
+        if result is not None:
+            self.last_result = result
+        self.rebuild()
+        self.set_busy(False)
+        if result is None:
+            message = "Scan complete. Remaining candidates are shown above."
+        else:
+            message = f"Renamed {result['renamed']:,} · Failed/not attempted {len(result.get('errors', [])):,}. Remaining candidates are shown above."
+            if result.get("warnings"):
+                message += " See last batch details for warnings."
+        if context.get("scan_error"):
+            message += " The rescan reported an error; see details before continuing."
+        elif self.last_scan and self.last_scan.get("errors"):
+            message += f" Rescan: {len(self.last_scan['errors'])} file errors; see details."
+        self.batch_status.setText(message)
+
+    def fail_action(self, details):
+        self.last_error = str(details)
+        # A failed connection or recovery can leave committed renames; do not reuse stale paths.
+        self.source_songs = []
+        self.rebuild()
+        self.set_busy(False)
+        message = self.last_error.strip().splitlines() or ["Unknown error"]
+        self.batch_status.setText(
+            "Operation could not finish: " + message[-1] + ". Use Rescan to reload candidates."
+        )
+
+    def show_batch_details(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("Last rename batch")
+        box.setText(self.batch_status.text())
+        box.setDetailedText(
+            self.last_error
+            or json.dumps({"rename": self.last_result, "scan": self.last_scan}, ensure_ascii=False, indent=2)
+        )
+        box.exec()
+
+    def reject(self):
+        if not self.busy:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.busy:
+            event.ignore()
+        else:
+            super().closeEvent(event)
 
 
 class ComparisonDialog(QDialog):

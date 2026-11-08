@@ -65,13 +65,13 @@ def test_metadata_artist_and_title_rules_do_not_change_other_parts(library):
     assert proposals(library, [song["id"]], use_metadata=False, reason="metadata_artist") == []
 
 
-def test_separator_rule_leaves_spacing_for_a_later_pass(library):
+def test_separator_rule_produces_two_dashes_without_surrounding_spaces(library):
     song = named_song(library, "Artist - A Song.MP3")
     item = proposals(library, [song["id"]], use_metadata=False, reason="separator")[0]
-    assert item["proposed"] == "Artist -- A Song.MP3"
-    rename_files(library, [{"id": song["id"], "name": item["proposed"], "sha256": item["sha256"]}])
-    item = proposals(library, [song["id"]], use_metadata=False, reason="spacing")[0]
     assert item["proposed"] == "Artist--A Song.MP3"
+    rename_files(library, [{"id": song["id"], "name": item["proposed"], "sha256": item["sha256"]}])
+    assert proposals(library, [song["id"]], use_metadata=False, reason="spacing") == []
+    assert library.song(song["id"])["path"] == "Artist--A Song.MP3"
 
 
 def test_extension_rule_does_not_need_artist_title_details(library):
@@ -201,4 +201,134 @@ def test_marking_one_correct_keeps_other_rows_approved(qapp, library):
     )
     dialog.mark_correct_button.click()
     assert {item["id"] for item in dialog.approved()} == before - {chosen}
+    dialog.close()
+
+
+def test_separator_prioritizes_double_dash_boundary_over_hyphen_in_artist(library):
+    song = named_song(library, "Artist - Guest - - A Song.MP3")
+    item = proposals(library, [song["id"]], use_metadata=False, reason="separator")[0]
+    assert item["proposed"] == "Artist - Guest--A Song.MP3"
+
+
+def test_reason_dropdown_only_contains_remaining_unmarked_operations(qapp, library):
+    song = named_song(library, "The Example Band -- A Song.MP3")
+    songs = [library.song(song["id"])]
+    dialog = RenameDialog(build_proposals(songs, use_metadata=False), songs=songs, use_metadata=False)
+    reasons = {dialog.reason_combo.itemData(i) for i in range(dialog.reason_combo.count())}
+    assert reasons == {None, "the", "spacing", "separator", "extension"}
+    dialog.table.setCurrentCell(0, 1)
+    dialog.mark_correct_button.click()
+    assert dialog.reason_combo.count() == 1
+    dialog.show_correct.setChecked(True)
+    assert dialog.reason_combo.count() == 1  # Shown exceptions are not pending changes.
+    dialog.table.setCurrentCell(0, 1)
+    dialog.mark_correct_button.click()
+    assert dialog.reason_combo.findData("the") >= 0
+    dialog.close()
+
+
+def test_dialog_blocks_duplicate_apply_and_close_while_batch_is_running(qapp, library):
+    song = named_song(library, "The Example Band--A Song.mp3")
+    songs = [library.song(song["id"])]
+    requests = []
+    dialog = RenameDialog(
+        build_proposals(songs, use_metadata=False), songs=songs, use_metadata=False, on_apply=requests.append
+    )
+    dialog.show()
+    dialog.approve_valid()
+    dialog.accept()
+    assert dialog.busy and len(requests) == 1
+    dialog.accept()
+    dialog.reject()
+    assert dialog.isVisible() and len(requests) == 1
+    dialog.complete_action({"songs": songs, "accepted": {}, "result": {"renamed": 0, "errors": []}})
+    assert not dialog.busy and dialog.isVisible()
+    assert dialog.approved() == []
+    dialog.close()
+
+
+def test_main_window_keeps_same_review_open_through_apply_scan_and_next_reason(qapp, library, monkeypatch):
+    from jbs_mp3_manager.app import MainWindow
+
+    song = named_song(library, "Performer, Alex -- A Song.MP3")
+    original = library.path(song).read_bytes()
+    window = MainWindow(restore=False, enable_audio=False)
+    window.open_library(library.root, scan=False)
+    scan_calls = []
+    real_scan = window.library.scan
+
+    def scan(*args, **kwargs):
+        scan_calls.append(True)
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(window.library, "scan", scan)
+
+    def run_job(operation, completed=None, **kwargs):
+        result = operation(window.library, lambda _: None)
+        if completed:
+            completed(result)
+
+    monkeypatch.setattr(window, "run_job", run_job)
+
+    class Review(RenameDialog):
+        def exec(self):
+            self.show()
+            for reason, filename in [
+                ("artist_order", "Alex Performer -- A Song.MP3"),
+                ("separator", "Alex Performer--A Song.MP3"),
+                ("extension", "Alex Performer--A Song.mp3"),
+            ]:
+                self.reason_combo.setCurrentIndex(self.reason_combo.findData(reason))
+                self.approve_valid()
+                self.accept()
+                assert self.isVisible() and not self.busy
+                assert self.approved() == []
+                assert window.library.song(song["id"])["path"] == filename
+                assert self.reason_combo.findData(reason) == -1
+                assert self.last_scan is not None
+            assert self.reason_combo.count() == 1
+            assert self.table.rowCount() == 0
+            assert self.last_result["renamed"] == 1
+            self.reject()
+            return self.DialogCode.Rejected
+
+    monkeypatch.setattr("jbs_mp3_manager.app.RenameDialog", Review)
+    window.review_names(song_ids=[song["id"]])
+    assert len(scan_calls) == 3
+    assert library.path(library.song(song["id"])).read_bytes() == original
+    window.close()
+
+
+def test_failed_refresh_cannot_reuse_stale_paths_and_rescan_restores_current_candidates(qapp, library):
+    song = named_song(library, "Performer, Alex -- A Song.MP3")
+    songs = [library.song(song["id"])]
+
+    def apply_then_fail(approved):
+        rename_files(library, approved)
+        raise RuntimeError("rescan unavailable")
+
+    def refresh():
+        report = library.scan()
+        dialog.complete_action(
+            {"songs": [library.song(song["id"])], "accepted": {}, "result": None, "scan": report}
+        )
+
+    dialog = RenameDialog(
+        build_proposals(songs, use_metadata=False),
+        songs=songs,
+        use_metadata=False,
+        on_apply=apply_then_fail,
+        on_refresh=refresh,
+    )
+    dialog.show()
+    dialog.reason_combo.setCurrentIndex(dialog.reason_combo.findData("artist_order"))
+    dialog.approve_valid()
+    dialog.accept()
+    assert dialog.isVisible() and not dialog.busy
+    assert dialog.table.rowCount() == 0 and dialog.approved() == []
+    assert "rescan unavailable" in dialog.batch_status.text()
+    dialog.refresh_button.click()
+    assert dialog.reason_combo.findData("artist_order") == -1
+    dialog.reason_combo.setCurrentIndex(dialog.reason_combo.findData("spacing"))
+    assert dialog.table.item(0, 2).text() == "Alex Performer--A Song.MP3"
     dialog.close()

@@ -642,7 +642,7 @@ class MainWindow(QMainWindow):
                 "Play uses highlighted songs. Play category uses the category. Exports let you choose songs or categories."
             )
 
-    def run_job(self, operation, completed=None, *, quiet=False, cancellable=False):
+    def run_job(self, operation, completed=None, *, quiet=False, cancellable=False, failed=None):
         if self.busy or not self.library:
             return
         self.busy = True
@@ -655,7 +655,7 @@ class MainWindow(QMainWindow):
         self.worker = worker
         worker.signals.progress.connect(self.job_progress)
         worker.signals.completed.connect(lambda result: self.job_done(result, completed, quiet))
-        worker.signals.failed.connect(self.job_failed)
+        worker.signals.failed.connect(lambda details: self.job_failed(details, failed))
         worker.signals.cancelled.connect(self.job_cancelled)
         self.pool.start(worker)
 
@@ -678,8 +678,11 @@ class MainWindow(QMainWindow):
         elif not quiet:
             self.statusBar().showMessage("Done.", 10000)
 
-    def job_failed(self, details):
+    def job_failed(self, details, failed=None):
         self.end_job()
+        if failed:
+            self.guarded(lambda: failed(details))
+            return
         message = details.strip().splitlines()[-1]
         box = QMessageBox(
             QMessageBox.Icon.Warning,
@@ -742,6 +745,39 @@ class MainWindow(QMainWindow):
                         self, "Filename review complete", "No proposed filename changes in this selection."
                     )
                 return
+
+            def launch(approved=None):
+                if approved:
+                    self.stop_for_file_changes()
+
+                def operate(library, progress):
+                    result = rename_files(library, approved, progress) if approved else None
+                    scan_error = None
+                    scan_report = None
+                    try:
+                        progress("Rescanning library after rename…" if approved else "Rescanning library…")
+                        scan_report = library.scan(progress)
+                    except Exception as error:
+                        scan_error = str(error)
+                        if result is not None:
+                            result["warnings"].append("Rescan: " + scan_error)
+                    songs = (
+                        library.songs()
+                        if song_ids is None
+                        else [library.song(song_id) for song_id in song_ids]
+                    )
+                    return {
+                        "songs": songs,
+                        "accepted": rename_marks(library),
+                        "result": result,
+                        "scan_error": scan_error,
+                        "scan": scan_report,
+                    }
+
+                self.run_job(operate, dialog.complete_action, failed=dialog.fail_action)
+                if self.worker:
+                    self.worker.signals.progress.connect(dialog.show_progress)
+
             dialog = RenameDialog(
                 items,
                 self,
@@ -750,18 +786,13 @@ class MainWindow(QMainWindow):
                 accepted=context["accepted"],
                 use_metadata=context["use_metadata"],
                 on_mark_correct=lambda songs, correct: mark_names_correct(self.library, songs, correct),
+                on_apply=launch,
+                on_refresh=launch,
             )
-            outcome = dialog.exec()
+            dialog.exec()
             self.guarded(
                 lambda: self.library.set_setting("rename_use_metadata", dialog.use_metadata.isChecked())
             )
-            if outcome == QDialog.DialogCode.Accepted:
-                approved = dialog.approved()
-                self.stop_for_file_changes()
-                self.run_job(
-                    lambda library, progress: rename_files(library, approved, progress),
-                    lambda result: self.show_report("Filename review complete", result),
-                )
 
         def prepare(library, progress):
             songs = library.songs() if song_ids is None else [library.song(song_id) for song_id in song_ids]

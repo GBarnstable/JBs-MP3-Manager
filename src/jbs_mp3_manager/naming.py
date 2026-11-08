@@ -15,11 +15,8 @@ from .media import digest_range
 
 def filename_parts(filename):
     """Recognize explicit separators without splitting hyphenated artist names."""
-    stem = Path(filename).stem
-    parts = stem.split("--", 1)
-    if len(parts) != 2:
-        parts = re.split(r"\s+-\s*-\s+|\s+[-\u2013\u2014]\s+", stem, maxsplit=1)
-    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ("", "")
+    parts = filename_components(filename)
+    return (parts["artist"].strip(), parts["title"].strip()) if parts else ("", "")
 
 
 def possible_first_name_first(artist):
@@ -184,7 +181,7 @@ def filename_components(filename):
         while end < len(stem) and stem[end].isspace():
             end += 1
     else:
-        match = re.search(r"\s+-\s*-\s+|\s+[-–—]\s+", stem)
+        match = re.search(r"\s+-\s*-\s+", stem) or re.search(r"\s+[-–—]\s+", stem)
         if not match:
             return None
         start, end = match.span()
@@ -272,10 +269,8 @@ def rename_operations(song, *, use_metadata):
         spacing["separator"] = "--"
     if _join_components(spacing) != original:
         operations["spacing"] = _join_components(spacing)
-    if compact_separator != "--":
-        leading = re.match(r"^\s*", parts["separator"]).group()
-        trailing = re.search(r"\s*$", parts["separator"]).group()
-        propose("separator", "separator", leading + "--" + trailing)
+    if parts["separator"] != "--":
+        propose("separator", "separator", "--")
     propose("extension", "extension", ".mp3")
     if use_metadata:
         metadata_artist = _metadata_artist(song, parts["artist"])
