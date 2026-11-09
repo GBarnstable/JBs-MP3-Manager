@@ -70,6 +70,7 @@ from .library import DATA_DIR, Library
 from .naming import build_proposals, mark_names_correct, rename_files, rename_marks
 from .playback import Playback
 from .review_dialog import ReviewDialog
+from .trash import trash_untagged
 
 STYLE = """
 QWidget { font-family: 'Segoe UI', 'DejaVu Sans'; font-size: 13px; color: #24354a; }
@@ -300,7 +301,13 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(4, 0, 0, 0)
         self.heading = QLabel("Welcome")
         self.heading.setStyleSheet("font-size: 20px; font-weight: 600;")
-        body.addWidget(self.heading)
+        heading_row = QHBoxLayout()
+        heading_row.addWidget(self.heading)
+        heading_row.addStretch()
+        self.delete_files_button = self.button("Delete selected MP3s…", self.delete_untagged_files)
+        self.delete_files_button.hide()
+        heading_row.addWidget(self.delete_files_button)
+        body.addLayout(heading_row)
         self.count = QLabel("Create a library by selecting the folder containing your master MP3 files.")
         self.count.setObjectName("muted")
         self.count.setWordWrap(True)
@@ -435,6 +442,7 @@ class MainWindow(QMainWindow):
             ("Review import issues / duplicates…", self.review_issues, "", True),
             ("Rename selected / category / all files…", self.review_names, "", True),
             ("Update selected metadata from filenames…", self.metadata_from_filenames, "", True),
+            ("Delete selected Untagged MP3 files…", self.delete_untagged_files, "", True),
             ("Review new songs…", self.review_new_songs, "", True),
             ("Compare selected recordings…", self.compare_selected, "", True),
             ("Build / refresh audio fingerprint index…", self.build_audio_index, "", True),
@@ -450,6 +458,9 @@ class MainWindow(QMainWindow):
             file_menu.addAction(action)
             if requires:
                 self.library_actions.append(action)
+            if callback == self.delete_untagged_files:
+                self.delete_files_action = action
+                action.setEnabled(False)
         help_menu = self.menuBar().addMenu("Help")
         self.auto_review_action = QAction("Review new song names and duplicates automatically", self)
         self.auto_review_action.setCheckable(True)
@@ -621,6 +632,11 @@ class MainWindow(QMainWindow):
 
     def selection_changed(self, *_):
         selected = self.selected_songs()
+        can_delete = bool(self.library and self.current_category == "untagged" and selected and not self.busy)
+        self.delete_files_button.setVisible(bool(self.library and self.current_category == "untagged"))
+        self.delete_files_button.setEnabled(can_delete)
+        if hasattr(self, "delete_files_action"):
+            self.delete_files_action.setEnabled(can_delete)
         if hasattr(self, "play_button"):
             self.play_button.setText("Play selection" if selected else "Play view")
         if len(selected) == 1:
@@ -1130,6 +1146,41 @@ class MainWindow(QMainWindow):
                 lambda result: self.show_report("Metadata from filenames", result),
             )
 
+    def confirm_file_deletion(self, songs):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Delete selected MP3 files?")
+        box.setText(f"Move {len(songs)} selected Untagged MP3 file(s) to the Recycle Bin?")
+        names = "\n".join(song["path"] for song in songs[:8])
+        if len(songs) > 8:
+            names += f"\n…and {len(songs) - 8} more (see Show Details)."
+        box.setInformativeText(
+            "The actual files will be removed from your music folder and library. "
+            "You can recover them from the Windows Recycle Bin.\n\n" + names
+        )
+        box.setDetailedText("\n".join(str(self.library.path(song)) for song in songs))
+        recycle = box.addButton("Move to Recycle Bin", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() == recycle
+
+    def delete_untagged_files(self):
+        if not self.library or self.busy or self.current_category != "untagged":
+            return
+        songs = self.selected_songs()
+        if not songs or not self.confirm_file_deletion(songs):
+            return
+        self.stop_for_file_changes()
+        if self.playback:
+            self.playback.queue = []
+            self.playback.index = 0
+        self.run_job(
+            lambda lib, progress: trash_untagged(lib, songs, progress),
+            lambda result: self.show_report("Delete Untagged MP3 files", result),
+        )
+
     def export_playlist(self):
         self.choose_export("playlist")
 
@@ -1211,6 +1262,15 @@ class MainWindow(QMainWindow):
             box.setText(
                 f"Recordings replaced: {report['replaced']} · Incoming duplicates deleted: {report['discarded']}"
                 f" · Errors or retained copies: {len(report.get('errors', []))}"
+            )
+        elif "trashed" in report:
+            box.setText(
+                f"Moved to Recycle Bin: {report['trashed']} · Errors: {len(report.get('errors', []))}"
+            )
+            box.setInformativeText(
+                "Files that could not be recycled were left in place. "
+                "To undo a deletion, restore the file from the Recycle Bin and rescan the library.\n\n"
+                f"Saved report: {report.get('report_path', '')}"
             )
         elif "deleted" in report:
             box.setText(

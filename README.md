@@ -2,7 +2,7 @@
 
 A local Windows desktop application for one master MP3 folder and any number of virtual categories. A song can belong to several categories without making extra copies.
 
-**Version 0.4.7** adds **Metadata from filenames** for selected songs: preview Artist and Title from `artist--title.mp3`, choose either field or both, and approve individual files or the whole batch. Filename spelling is copied literally; other tags, artwork, audio, and categories are preserved. Files without both filename parts are skipped. Tag backups and per-file failures use the existing metadata editor. All previous rename, duplicate review, playback, and export features remain available. Existing libraries open directly and retain their categories. See [QUICK_START.md](QUICK_START.md) for the approval workflow and moving D: → C:.
+**Version 0.4.7** adds **Metadata from filenames** for selected songs: preview Artist and Title from `artist--title.mp3`, choose either field or both, and approve individual files or the whole batch. Filename spelling is copied literally; other tags, artwork, audio, and categories are preserved. Files without both filename parts are skipped. Tag backups and per-file failures use the existing metadata editor. Selected Untagged MP3s can also be moved to the Windows Recycle Bin after confirmation; successful files leave the library, and failed files are retained. All previous rename, duplicate review, playback, and export features remain available. Existing libraries open directly and retain their categories. See [QUICK_START.md](QUICK_START.md) for the approval workflow and moving D: → C:.
 
 ## Included
 
