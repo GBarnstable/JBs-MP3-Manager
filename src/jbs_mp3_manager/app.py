@@ -63,6 +63,8 @@ from .duplicates import archive_inventory, purge_archives, recover_pending
 from .duplicates import merge as merge_duplicates
 from .duplicates import review as duplicate_review
 from .exports import execute_export
+from .filename_tag_dialog import FilenameTagDialog
+from .filename_tags import apply as apply_filename_tags
 from .fingerprinting import apply_decisions, find_candidates, index_library
 from .library import DATA_DIR, Library
 from .naming import build_proposals, mark_names_correct, rename_files, rename_marks
@@ -332,6 +334,7 @@ class MainWindow(QMainWindow):
         actions.setContentsMargins(0, 0, 0, 0)
         actions.addWidget(self.button("Categorize…", self.categorize))
         actions.addWidget(self.button("Edit metadata…", self.edit_metadata))
+        actions.addWidget(self.button("Metadata from filenames…", self.metadata_from_filenames))
         actions.addWidget(self.button("Clear selection", self.table.clearSelection))
         actions.addStretch()
         actions.addWidget(self.button("Export playlist…", self.export_playlist))
@@ -431,6 +434,7 @@ class MainWindow(QMainWindow):
             ("Import category folders…", self.import_categories, "", True),
             ("Review import issues / duplicates…", self.review_issues, "", True),
             ("Rename selected / category / all files…", self.review_names, "", True),
+            ("Update selected metadata from filenames…", self.metadata_from_filenames, "", True),
             ("Review new songs…", self.review_new_songs, "", True),
             ("Compare selected recordings…", self.compare_selected, "", True),
             ("Build / refresh audio fingerprint index…", self.build_audio_index, "", True),
@@ -1104,6 +1108,26 @@ class MainWindow(QMainWindow):
             self.run_job(
                 lambda lib, progress: lib.edit_metadata([s["id"] for s in songs], dialog.values(), progress),
                 lambda result: self.show_report("Metadata update", result),
+            )
+
+    def metadata_from_filenames(self):
+        if not self.library or self.busy:
+            return
+        songs = self.selected_songs()
+        if not songs:
+            QMessageBox.information(
+                self, "Select songs", "Select the songs whose metadata you want to update."
+            )
+            return
+        dialog = FilenameTagDialog(songs, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        updates = dialog.updates()
+        if updates:
+            self.stop_for_file_changes()
+            self.run_job(
+                lambda lib, progress: apply_filename_tags(lib, updates, progress),
+                lambda result: self.show_report("Metadata from filenames", result),
             )
 
     def export_playlist(self):
