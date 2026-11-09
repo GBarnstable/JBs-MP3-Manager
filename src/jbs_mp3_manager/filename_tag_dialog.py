@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from .filename_tags import TAG_FIELDS, preview
+from .table_columns import configure_columns
 
 
 class FilenameTagDialog(QDialog):
@@ -59,6 +60,7 @@ class FilenameTagDialog(QDialog):
                 "Status",
             ]
         )
+        configure_columns(self.table, "filename_tags")
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)

@@ -122,10 +122,10 @@ def test_native_windows_recycle_removes_generated_file(qapp, tmp_path):
     assert not path.exists()
 
 
-def test_delete_action_requires_untagged_selection_and_confirmation(qapp, library, recycle_bin, monkeypatch):
+def test_untagged_delete_button_requires_selection_and_confirmation(qapp, library, recycle_bin, monkeypatch):
     window = MainWindow(restore=False, enable_audio=False)
     window.open_library(library.root, scan=False)
-    assert not window.delete_files_action.isEnabled()
+    assert window.delete_files_action.isEnabled()
     assert window.delete_files_button.isHidden()
     window.category_list.setCurrentRow(1)
     window.table.selectionModel().select(
@@ -150,7 +150,7 @@ def test_delete_action_requires_untagged_selection_and_confirmation(qapp, librar
     window.refresh()
     assert window.model.rowCount() == 2
     window.category_list.setCurrentRow(0)
-    assert not window.delete_files_action.isEnabled()
+    assert window.delete_files_action.isEnabled()
     window.close()
 
 

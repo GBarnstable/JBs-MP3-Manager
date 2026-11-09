@@ -32,6 +32,7 @@ from .naming import (
     suggested_name,
     validate_name,
 )
+from .table_columns import configure_columns
 
 
 class RenameOneDialog(QDialog):
@@ -174,6 +175,7 @@ class RenameDialog(QDialog):
         self.summary = QLabel()
         layout.addWidget(self.summary)
         self.table = QTableWidget(len(proposals), 4)
+        configure_columns(self.table, "rename")
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setHorizontalHeaderLabels(
@@ -672,6 +674,7 @@ class ComparisonDialog(QDialog):
         label.setWordWrap(True)
         layout.addWidget(label)
         self.table = QTableWidget(len(self.pairs), 4)
+        configure_columns(self.table, "recording_comparisons")
         self.table.setHorizontalHeaderLabels(
             ["New recording", "Current recording", "Quality / match", "Action"]
         )

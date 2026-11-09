@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .media import quality_text
+from .table_columns import configure_columns
 
 
 class ReviewDialog(QDialog):
@@ -56,6 +57,7 @@ class ReviewDialog(QDialog):
         duplicate_page = QWidget()
         duplicates = QVBoxLayout(duplicate_page)
         self.table = QTableWidget(len(snapshot["groups"]), 4)
+        configure_columns(self.table, "duplicate_groups")
         self.table.setHorizontalHeaderLabels(
             ["Copies", "File to keep", "Combined categories", "Import issues"]
         )
@@ -96,6 +98,7 @@ class ReviewDialog(QDialog):
             )
         tabs.addTab(duplicate_page, f"Duplicates ({len(snapshot['groups'])})")
         issues = QTableWidget(len(snapshot["issues"]), 4)
+        configure_columns(issues, "import_issues")
         issues.setHorizontalHeaderLabels(
             ["Category", "Category copy", "Current status", "Candidates / resolution"]
         )

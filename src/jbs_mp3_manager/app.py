@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .arrival_dialogs import ComparisonDialog, RenameDialog
+from .delete_dialog import DeleteFilesDialog
 from .dialogs import (
     CategoryDialog,
     EqualizerDialog,
@@ -72,6 +73,7 @@ from .library import DATA_DIR, Library
 from .naming import build_proposals, mark_names_correct, rename_files, rename_marks
 from .playback import Playback
 from .review_dialog import ReviewDialog
+from .table_columns import configure_columns
 from .trash import trash_untagged
 
 STYLE = """
@@ -322,6 +324,7 @@ class MainWindow(QMainWindow):
         self.proxy.setSortCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.table = QTableView()
         self.table.setModel(self.proxy)
+        configure_columns(self.table, "songs")
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -446,7 +449,7 @@ class MainWindow(QMainWindow):
             ("Rename selected / category / all files…", self.review_names, "", True),
             ("Update selected metadata from filenames…", self.metadata_from_filenames, "", True),
             ("Review filename / metadata discrepancies…", self.review_discrepancies, "", True),
-            ("Delete selected Untagged MP3 files…", self.delete_untagged_files, "", True),
+            ("Delete Untagged MP3 files…", self.choose_untagged_deletion, "", True),
             ("Review new songs…", self.review_new_songs, "", True),
             ("Compare selected recordings…", self.compare_selected, "", True),
             ("Build / refresh audio fingerprint index…", self.build_audio_index, "", True),
@@ -462,7 +465,7 @@ class MainWindow(QMainWindow):
             file_menu.addAction(action)
             if requires:
                 self.library_actions.append(action)
-            if callback == self.delete_untagged_files:
+            if callback == self.choose_untagged_deletion:
                 self.delete_files_action = action
                 action.setEnabled(False)
         help_menu = self.menuBar().addMenu("Help")
@@ -640,7 +643,7 @@ class MainWindow(QMainWindow):
         self.delete_files_button.setVisible(bool(self.library and self.current_category == "untagged"))
         self.delete_files_button.setEnabled(can_delete)
         if hasattr(self, "delete_files_action"):
-            self.delete_files_action.setEnabled(can_delete)
+            self.delete_files_action.setEnabled(bool(self.library and not self.busy))
         if hasattr(self, "play_button"):
             self.play_button.setText("Play selection" if selected else "Play view")
         if len(selected) == 1:
@@ -1222,11 +1225,33 @@ class MainWindow(QMainWindow):
         box.exec()
         return box.clickedButton() == recycle
 
+    def choose_untagged_deletion(self):
+        if not self.library or self.busy:
+            return
+        dialog = DeleteFilesDialog(
+            self.library.root,
+            self.library.songs("untagged"),
+            [song["id"] for song in self.selected_songs()],
+            self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.recycle_approved_files(dialog.selected_songs())
+
     def delete_untagged_files(self):
-        if not self.library or self.busy or self.current_category != "untagged":
+        if not self.library or self.busy:
+            return
+        if self.current_category != "untagged":
+            self.choose_untagged_deletion()
             return
         songs = self.selected_songs()
-        if not songs or not self.confirm_file_deletion(songs):
+        if not songs:
+            self.choose_untagged_deletion()
+            return
+        if self.confirm_file_deletion(songs):
+            self.recycle_approved_files(songs)
+
+    def recycle_approved_files(self, songs):
+        if not songs or not self.library or self.busy:
             return
         self.stop_for_file_changes()
         if self.playback:

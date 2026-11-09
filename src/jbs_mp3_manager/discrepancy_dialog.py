@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .discrepancies import CHOICES, preview
+from .table_columns import configure_columns
 
 
 class DiscrepancyDialog(QDialog):
@@ -67,6 +68,7 @@ class DiscrepancyDialog(QDialog):
                 "Preview of chosen update",
             ]
         )
+        configure_columns(self.table, "discrepancies")
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)

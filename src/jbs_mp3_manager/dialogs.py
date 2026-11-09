@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from .exports import EXPORT_DIR, ExportGroup, ExportRequest, safe_name
 from .media import FIELDS
+from .table_columns import configure_columns
 
 
 class FolderDialog(QDialog):
@@ -119,6 +120,7 @@ class ImportPreview(QDialog):
         summary.setWordWrap(True)
         layout.addWidget(summary)
         table = QTableWidget(len(entries), 4)
+        configure_columns(table, "category_import")
         table.setHorizontalHeaderLabels(["Category", "Category copy", "Match", "Master / explanation"])
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         for row, entry in enumerate(entries):
