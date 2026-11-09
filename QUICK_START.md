@@ -21,6 +21,20 @@
 - Enter a playlist or **New folder name** in the dialog. Playlists go under `<music folder>/Exports/Playlists`; MP3 copies go under `<music folder>/Exports/<new folder>`. Folders are created automatically. Separate categories get their own named subfolders/playlists inside the named export. Repeated exports get a new name rather than overwriting old ones. MP3 exports include a playlist of the exported copies. Exports is excluded from all library scans, even recursive scans, so copies never become new Untagged songs.
 - Use **Library → Back up category database** to make a consistent SQLite snapshot. This backs up categories and the metadata cache, not the MP3 files themselves.
 
+# Compare filenames with Artist / Title metadata (0.4.8)
+
+Click **Review filenames / tags…** above the library, or **Library → Review filename / metadata discrepancies…**. Choose selected songs, the current category, or the entire library. The app rescans before comparing.
+
+The screen shows only discrepancies, with the current filename, Artist and Title tags, the reason, your decision, and the exact preview. Every row starts at **Leave unchanged**. Choose separately for each song:
+
+- **Update metadata from filename** writes the parsed Artist and Title literally; only different fields are changed. Explicit `--` and legacy spaced separators are recognized. Both filename parts must be present.
+- **Update filename from metadata** keeps the tags and builds `First Last--Title.mp3`, with a leading `The` moved to `, The`. Both tags must be present. Ambiguous comma artist names must first be edited in the metadata editor. Invalid Windows filename characters are replaced with underscores.
+- **Leave unchanged** skips the song for this batch. It will be available for review again later.
+
+Expected differences such as `Who, The` versus `The Who` are hidden by default. Check **Show convention-only differences** to include them. You can sort by any text column, filter by discrepancy reason, search filenames or tags, and use Shift/Ctrl to select rows. The selected-row buttons set one direction for the highlighted visible songs. **Select all visible rows** supports large batches. Decisions hidden by filters still count in **Apply N chosen updates** and are explicitly counted in the summary.
+
+Click **Apply** to run the chosen directions together. The window stays open, rescans, clears the applied choices, and shows remaining discrepancies. Successful changes are kept if another file fails; existing filenames are never overwritten. **Last batch details** includes errors and saved reports. Filenames changed outside the program or files edited after preview require a rescan before another update. Categories, stable song IDs, other metadata and artwork are preserved; original ID3 tags and rename recovery data are backed up. Re-export external playlists after filename changes.
+
 # Resolve ambiguous imports and duplicate masters
 
 1. Open your existing library and click **Review issues…** beside Rescan, or **Library → Review import issues / duplicates**. After a new import, **Review unresolved issues** opens the same screen.
@@ -72,9 +86,9 @@ Opening the mirrored folder directly also works if you later need to restore it.
 
 # Updating from an earlier version
 
-Close the old app, extract the complete **0.4.7-Windows** download into a new application folder, and launch its EXE. It preserves existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. You do not need to recreate the library or import categories again. Keep the whole `_internal` folder with the new EXE.
+Close the old app, extract the complete **0.4.8-Windows** download into a new application folder, and launch its EXE. It preserves existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. You do not need to recreate the library or import categories again. Keep the whole `_internal` folder with the new EXE.
 
-If you already have **version 0.3**, the much smaller **0.4.7-UPDATE-from-0.3** download can be merged directly into your existing application folder. Close the app first, copy all update contents beside the existing EXE, accept file replacements, and merge the `_internal` contents with the existing `_internal` folder. The update is not a standalone application and must not be extracted into your music library. It is tested over the original 0.3 package before download is offered.
+If you already have **version 0.3**, the much smaller **0.4.8-UPDATE-from-0.3** download can be merged directly into your existing application folder. Close the app first, copy all update contents beside the existing EXE, accept file replacements, and merge the `_internal` contents with the existing `_internal` folder. The update is not a standalone application and must not be extracted into your music library. It is tested over the original 0.3 package before download is offered.
 
 If Windows SmartScreen appears for this unsigned new build, click **More info** to reveal **Run anyway** when you intend to run your downloaded build.
 

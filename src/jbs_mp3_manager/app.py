@@ -59,6 +59,8 @@ from .dialogs import (
     ImportPreview,
     MetadataDialog,
 )
+from .discrepancies import apply as apply_discrepancies
+from .discrepancy_dialog import DiscrepancyDialog
 from .duplicates import archive_inventory, purge_archives, recover_pending
 from .duplicates import merge as merge_duplicates
 from .duplicates import review as duplicate_review
@@ -271,6 +273,7 @@ class MainWindow(QMainWindow):
         tools.addWidget(self.button("Import category folders…", self.import_categories))
         tools.addWidget(self.button("Rescan", self.scan))
         tools.addWidget(self.button("Review issues…", self.review_issues))
+        tools.addWidget(self.button("Review filenames / tags…", self.review_discrepancies))
         tools.addStretch()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search title, artist, album, or filename…")
@@ -442,6 +445,7 @@ class MainWindow(QMainWindow):
             ("Review import issues / duplicates…", self.review_issues, "", True),
             ("Rename selected / category / all files…", self.review_names, "", True),
             ("Update selected metadata from filenames…", self.metadata_from_filenames, "", True),
+            ("Review filename / metadata discrepancies…", self.review_discrepancies, "", True),
             ("Delete selected Untagged MP3 files…", self.delete_untagged_files, "", True),
             ("Review new songs…", self.review_new_songs, "", True),
             ("Compare selected recordings…", self.compare_selected, "", True),
@@ -737,6 +741,58 @@ class MainWindow(QMainWindow):
             lambda result: self.show_report("Audio index", result),
             cancellable=True,
         )
+
+    def review_discrepancies(self, checked=False, *, song_ids=None):
+        if not self.library or self.busy:
+            return
+        category_scope = False
+        if song_ids is None:
+            selected = self.selected_songs()
+            options = ([f"Selected songs ({len(selected)})"] if selected else []) + [
+                "Current category",
+                "Entire library",
+            ]
+            scope, accepted = QInputDialog.getItem(
+                self, "Filename / metadata review", "Choose songs to compare:", options, editable=False
+            )
+            if not accepted:
+                return
+            if scope.startswith("Selected songs"):
+                song_ids = {song["id"] for song in selected}
+            elif scope == "Current category":
+                category_scope = True
+        category = self.current_category
+
+        def read_scope(library):
+            songs = library.songs(category if category_scope else None)
+            return songs if song_ids is None else [song for song in songs if song["id"] in song_ids]
+
+        def operate(library, progress, decisions=None):
+            result = apply_discrepancies(library, decisions, progress) if decisions else None
+            scan = library.scan(progress=progress)
+            return {"songs": read_scope(library), "result": result, "scan": scan}
+
+        def loaded(context):
+            def launch(decisions=None):
+                if decisions:
+                    self.stop_for_file_changes()
+                    if self.playback:
+                        self.playback.queue = []
+                        self.playback.index = 0
+                self.run_job(
+                    lambda lib, progress: operate(lib, progress, decisions),
+                    dialog.complete_action,
+                    failed=dialog.fail_action,
+                )
+                if self.worker:
+                    self.worker.signals.progress.connect(dialog.show_progress)
+
+            dialog = DiscrepancyDialog(context["songs"], self, on_apply=launch, on_refresh=launch)
+            dialog.last_details = context
+            dialog.details_button.setEnabled(True)
+            dialog.exec()
+
+        self.run_job(operate, loaded)
 
     def review_names(self, checked=False, *, song_ids=None, auto_review=False):
         if not self.library or self.busy:
