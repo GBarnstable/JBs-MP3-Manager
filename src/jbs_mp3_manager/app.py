@@ -51,6 +51,11 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .arrival_dialogs import ComparisonDialog, RenameDialog
+from .category_review import apply_review as apply_category_suggestions
+from .category_review import export_review as export_category_review
+from .category_review import preview as preview_category_suggestions
+from .category_review import read_json
+from .category_review_dialog import CategorySuggestionsDialog
 from .delete_dialog import DeleteFilesDialog
 from .dialogs import (
     CategoryDialog,
@@ -233,7 +238,7 @@ class MainWindow(QMainWindow):
         self.debounce.setInterval(2500)
         self.debounce.timeout.connect(self.auto_scan)
         self.rescan_timer = QTimer(self)
-        self.rescan_timer.setInterval(60000)
+        self.rescan_timer.setInterval(15 * 60 * 1000)
         self.rescan_timer.timeout.connect(self.auto_scan)
         self.rescan_timer.start()
         self.refresh()
@@ -445,6 +450,8 @@ class MainWindow(QMainWindow):
             ("Rescan", self.scan, "F5", True),
             ("Verify all files…", self.verify, "", True),
             ("Import category folders…", self.import_categories, "", True),
+            ("Export library for category suggestions…", self.export_category_suggestions, "", True),
+            ("Import category suggestions…", self.import_category_suggestions, "", True),
             ("Review import issues / duplicates…", self.review_issues, "", True),
             ("Rename selected / category / all files…", self.review_names, "", True),
             ("Update selected metadata from filenames…", self.metadata_from_filenames, "", True),
@@ -744,6 +751,109 @@ class MainWindow(QMainWindow):
             lambda result: self.show_report("Audio index", result),
             cancellable=True,
         )
+
+    def export_category_suggestions(self):
+        if not self.library or self.busy:
+            return
+        goals, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Category suggestion goals",
+            "What would you like me to recommend? This export includes song names, tags, "
+            "existing categories and relative filenames for you to upload here. MP3 audio is not included.",
+            "Suggest more songs for my existing categories, categorize Untagged songs, and propose useful new categories.",
+        )
+        if not accepted:
+            return
+        folder = self.library.export_root() / "Category Review"
+        folder.mkdir(exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export library summary for category suggestions",
+            str(folder / "library-category-review.json"),
+            "JSON files (*.json)",
+        )
+        if not path:
+            return
+
+        def operate(library, progress):
+            scan = library.scan(progress=progress)
+            result = export_category_review(library, path, goals, progress)
+            result["scan_errors"] = scan["errors"]
+            return result
+
+        def complete(result):
+            box = QMessageBox(self)
+            box.setWindowTitle("Library summary ready for category suggestions")
+            box.setText(
+                f"Exported {result['songs']} songs and {result['categories']} categories.\n\n{result['path']}"
+            )
+            box.setInformativeText(
+                "Upload this JSON file to our chat and ask for category recommendations. "
+                "The file includes a template for my response. Save the returned suggestions JSON, "
+                "then choose Library → Import category suggestions to review and apply it."
+                + (
+                    "\nSome files could not be read during the scan; see details."
+                    if result["scan_errors"]
+                    else ""
+                )
+            )
+            box.setDetailedText(json.dumps(result, ensure_ascii=False, indent=2))
+            open_folder = box.addButton("Open export folder", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Ok)
+            box.exec()
+            if box.clickedButton() == open_folder:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(result["path"]).parent)))
+
+        self.run_job(operate, complete)
+
+    def import_category_suggestions(self):
+        if not self.library or self.busy:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose category suggestions returned from review",
+            str(self.library.root / "Exports" / "Category Review"),
+            "JSON files (*.json)",
+        )
+        if not path:
+            return
+
+        def prepare(library, progress):
+            document = read_json(path)
+            scan = library.scan(progress=progress)
+            return preview_category_suggestions(library, document, scan_errors=scan["errors"])
+
+        def loaded(review):
+            dialog = CategorySuggestionsDialog(review, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            approved = dialog.approved_indices()
+            if approved:
+                self.run_job(
+                    lambda lib, progress: apply_category_suggestions(lib, review, approved, progress),
+                    self.category_suggestions_complete,
+                )
+
+        self.run_job(prepare, loaded)
+
+    def category_suggestions_complete(self, result):
+        box = QMessageBox(self)
+        box.setWindowTitle("Category suggestions applied")
+        box.setText(
+            f"Song/category memberships added: {result['added']}\nNew categories created: {len(result['created_categories'])}"
+        )
+        text = (
+            "Created: " + ", ".join(result["created_categories"])
+            if result["created_categories"]
+            else "Additions were made to existing categories."
+        )
+        text += f"\nSkipped: {len(result['skipped'])} · Errors: {len(result['errors'])}"
+        text += f"\n\nSaved report: {result.get('report_path', '')}\nDatabase backup: {result.get('database_backup', '')}"
+        if result["warnings"]:
+            text += "\n" + "\n".join(result["warnings"])
+        box.setInformativeText(text)
+        box.setDetailedText(json.dumps(result, ensure_ascii=False, indent=2))
+        box.exec()
 
     def review_discrepancies(self, checked=False, *, song_ids=None):
         if not self.library or self.busy:
