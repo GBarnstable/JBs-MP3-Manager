@@ -310,7 +310,8 @@ def test_export_and_import_menu_round_trip_and_fifteen_minute_rescan(qapp, libra
         dialog.confidence.setCurrentIndex(dialog.confidence.findData("high"))
         dialog.category.setCurrentIndex(dialog.category.findData("Evening"))
         dialog.search.setText("review example")
-        dialog.table.horizontalHeader().moveSection(0, 6)
+        header = dialog.table.horizontalHeader()
+        header.moveSection(header.visualIndex(0), 6)
         first_index = dialog.row(0)["index"]
         dialog.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
         dialog.apply_button.click()
