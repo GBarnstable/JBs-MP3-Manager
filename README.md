@@ -2,7 +2,7 @@
 
 A local Windows desktop application for one master MP3 folder and any number of virtual categories. A song can belong to several categories without making extra copies.
 
-**Version 0.5.0** adds an export/review/import workflow for category recommendations. Export song metadata and current category memberships, upload the JSON for review here, and import the returned suggestions with per-song reasons and confidence. Approve additions to existing categories or create proposed new categories as needed. Stable IDs, saved export snapshots, fresh checks, database backups and previews protect existing organization; song files are untouched. The periodic rescan interval is now 15 minutes. Folder-change detection and manual scans remain available. Previous metadata, rename, duplicate quality, deletion, column-order, playback and export tools remain supported. Existing libraries open directly. See [QUICK_START.md](QUICK_START.md) for the full workflow.
+**Version 0.5.1** keeps the category suggestion review screen open after each applied batch, refreshes the remaining recommendations, and preserves your filters, sorting and column order. Listen before approving with Play, Pause/Resume, Stop and a seek bar directly in the review screen. Completed suggestions disappear; Close exits when you are finished. Existing libraries and suggestion files work directly. The category recommendation exchange and 15-minute periodic scans introduced in 0.5.0 remain supported, along with previous metadata, rename, duplicate quality, deletion, playback and export tools. See [QUICK_START.md](QUICK_START.md) for the full workflow.
 
 ## Included
 
@@ -40,9 +40,9 @@ A local Windows desktop application for one master MP3 folder and any number of 
 
 ## Windows download
 
-Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.5.0-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
+Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.5.1-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
 
-If you already have the portable 0.3 application, the **0.5.0-UPDATE-from-0.3** artifact is a smaller alternative: close the app and merge all update files into the existing 0.3 application folder, accepting file replacements. Keep the original `_internal` folder and merge its new contents. This update cannot run on its own. The workflow verifies the update over the original 0.3 package, including startup, VLC, and the fingerprint tool.
+If you already have the portable 0.3 application, the **0.5.1-UPDATE-from-0.3** artifact is a smaller alternative: close the app and merge all update files into the existing 0.3 application folder, accepting file replacements. Keep the original `_internal` folder and merge its new contents. This update cannot run on its own. The workflow verifies the update over the original 0.3 package, including startup, VLC, and the fingerprint tool.
 
 The CI package includes the 64-bit VLC runtime, so Python and a separate VLC installation are not needed. The application is unsigned; Windows may show its normal unknown-publisher prompt. Windows 10/11, 64-bit, is the target. Automated build/decoding checks cannot replace listening and migration tests on your own computer.
 

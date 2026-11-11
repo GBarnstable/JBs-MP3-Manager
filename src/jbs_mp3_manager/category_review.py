@@ -276,6 +276,7 @@ def apply_review(library, review, approved_indices, progress=lambda message: Non
         return result
     # Refresh cached audio identities before making any category changes.
     scan = library.scan(progress=progress)
+    result["scan_errors"] = scan["errors"]
     token = uuid.uuid4().hex
     backup = library.data / "category-review" / "backups" / f"{token}.sqlite3"
     backup.parent.mkdir(parents=True, exist_ok=True)

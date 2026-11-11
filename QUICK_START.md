@@ -21,13 +21,16 @@
 - Enter a playlist or **New folder name** in the dialog. Playlists go under `<music folder>/Exports/Playlists`; MP3 copies go under `<music folder>/Exports/<new folder>`. Folders are created automatically. Separate categories get their own named subfolders/playlists inside the named export. Repeated exports get a new name rather than overwriting old ones. MP3 exports include a playlist of the exported copies. Exports is excluded from all library scans, even recursive scans, so copies never become new Untagged songs.
 - Use **Library → Back up category database** to make a consistent SQLite snapshot. This backs up categories and the metadata cache, not the MP3 files themselves.
 
-# Get category recommendations and import them (0.5.0)
+# Get category recommendations and import them
 
 1. Choose **Library → Export library for category suggestions…**. Enter your goals, for example, “suggest more songs for Poker Party,” “categorize Untagged songs,” or “propose useful new categories.” The export includes the whole active library so existing category examples are available for comparison.
 2. Save the JSON. The default folder is `<music folder>/Exports/Category Review`. Upload that JSON file to our chat and ask for recommendations. It contains song IDs, relative filenames, Artist/Title/album/genre/year/track metadata, duration/bitrate, current categories, and a response template. It contains no MP3 audio or absolute music-folder path. Reviewing metadata and examples can suggest category fits; uncertain song identities or interpretations should have lower confidence.
 3. I can return a ready-to-import suggestions JSON with explanations, confidence levels, additions to existing categories, and proposed new categories. Save that file locally.
 4. Choose **Library → Import category suggestions…** and select the returned file. Review the song assignments and proposed new-category tabs. Nothing is preapproved. Filter by category or confidence, search songs/reasons, and approve individual or highlighted rows. **Approve all visible valid suggestions** supports batches. Approved rows hidden by filters are counted explicitly.
-5. Click **Apply approved additions**. Only approved memberships are added. A proposed new category is created only if an approved assignment needs it; unused proposals are left uncreated. Existing memberships, MP3 files, metadata and filenames are preserved. The category database is backed up and an outcome report is saved before changes are applied.
+5. To listen before deciding, select a song and click **Play highlighted song**, or double-click its row. Only that song is queued in the shared player, regardless of the current main-window selection. **Pause/Resume**, **Stop** and the seek bar work inside the review screen. Playing does not approve a recommendation; playback can continue in the main player after closing the review.
+6. Click **Apply approved additions**. The screen stays open while the batch saves in the background, then displays the remaining suggestions. Applied/already-assigned rows disappear and approvals clear. Your category/confidence/search filters, sorting, window and column layout stay in place; a completed category filter returns to All categories. Repeat for another batch, and click **Close** when finished—even an empty review stays open until you close it. Only approved memberships are added. A proposed new category is created only if an approved assignment needs it; unused proposals are left uncreated. Existing memberships, MP3 files, metadata and filenames are preserved. The category database is backed up and an outcome report is saved before changes are applied.
+
+**Rescan** refreshes the review without reopening the JSON. The batch summary appears in the review window; **Last batch details…** shows saved report/backup paths, warnings and individual errors. Closing and duplicate Apply clicks are blocked during saving. If a batch or reload fails, stale candidates are cleared; use Rescan before trying again. Completed additions remain saved.
 
 Already-assigned and duplicate suggestions are skipped. Unknown IDs, missing/replaced recordings, invalid categories, and undeclared new category names cannot be approved. Categories renamed or deleted since export require a new review export. Artist/Title corrections since export are flagged for careful review. Targets are rechecked before applying; fresh changes may require reopening the suggestions. Unexpected database failures roll back the batch. Reimporting an applied recommendation does not create duplicate assignments.
 
@@ -54,7 +57,7 @@ The export includes an exact `suggestions_template` containing this library's id
 
 Use exact existing category names or explicitly declare new names. Confidence is `high`, `medium`, or `low`. This format supports additions; the regular category tools remain available for removals. Category files are parsed as JSON data. The app does not contact an AI service automatically; the export and returned suggestions are exchanged through this chat.
 
-# Scan timing (0.5.0)
+# Scan timing (0.5.0 and newer)
 
 The periodic automatic scan runs every **15 minutes** while the app is open. Main-folder change notifications still trigger a scan after about **2.5 seconds** without another change. Opening a library, certain review operations, and **Rescan / F5** also scan. Automatic scans pause during operations and open dialogs. Unchanged files are checked by size/time rather than reread in full.
 
@@ -127,9 +130,9 @@ Opening the mirrored folder directly also works if you later need to restore it.
 
 # Updating from an earlier version
 
-Close the old app, extract the complete **0.5.0-Windows** download into a new application folder, and launch its EXE. It preserves existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. You do not need to recreate the library or import categories again. Keep the whole `_internal` folder with the new EXE.
+Close the old app, extract the complete **0.5.1-Windows** download into a new application folder, and launch its EXE. It preserves existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. You do not need to recreate the library or import categories again. Keep the whole `_internal` folder with the new EXE.
 
-If you already have **version 0.3**, the much smaller **0.5.0-UPDATE-from-0.3** download can be merged directly into your existing application folder. Close the app first, copy all update contents beside the existing EXE, accept file replacements, and merge the `_internal` contents with the existing `_internal` folder. The update is not a standalone application and must not be extracted into your music library. It is tested over the original 0.3 package before download is offered.
+If you already have **version 0.3**, the much smaller **0.5.1-UPDATE-from-0.3** download can be merged directly into your existing application folder. Close the app first, copy all update contents beside the existing EXE, accept file replacements, and merge the `_internal` contents with the existing `_internal` folder. The update is not a standalone application and must not be extracted into your music library. It is tested over the original 0.3 package before download is offered.
 
 If Windows SmartScreen appears for this unsigned new build, click **More info** to reveal **Run anyway** when you intend to run your downloaded build.
 

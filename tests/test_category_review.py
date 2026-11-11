@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 
 import pytest
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMessageBox
 
 from jbs_mp3_manager.app import MainWindow
@@ -245,7 +246,9 @@ def test_scan_errors_and_invalid_new_categories_are_visible(library, exported, m
 
 
 def test_preview_approvals_filters_and_reordered_columns_keep_original_indices(qapp, library, exported):
-    dialog = CategorySuggestionsDialog(preview(library, exported["response"]))
+    dialog = CategorySuggestionsDialog(
+        preview(library, exported["response"]), on_apply=lambda indices: None, on_refresh=lambda: None
+    )
     assert not dialog.approved_indices() and not dialog.apply_button.isEnabled()
     dialog.table.horizontalHeader().moveSection(0, 6)
     dialog.confidence.setCurrentIndex(dialog.confidence.findData("high"))
@@ -276,7 +279,9 @@ def test_export_and_import_menu_round_trip_and_fifteen_minute_rescan(qapp, libra
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
     monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.StandardButton.Ok)
     monkeypatch.setattr(
-        window, "run_job", lambda operation, completed: completed(operation(window.library, lambda _: None))
+        window,
+        "run_job",
+        lambda operation, completed, **kwargs: completed(operation(window.library, lambda _: None)),
     )
     menu = window.menuBar().actions()[0].menu()
     next(a for a in menu.actions() if a.text().startswith("Export library for category")).trigger()
@@ -285,26 +290,217 @@ def test_export_and_import_menu_round_trip_and_fifteen_minute_rescan(qapp, libra
     response["new_categories"] = [{"name": "Evening", "description": "Quiet evening listening"}]
     response["suggestions"] = [
         {
-            "song_id": document["songs"][0]["song_id"],
+            "song_id": song["song_id"],
             "category": "Evening",
             "confidence": "high",
             "reason": "A review example.",
         }
+        for song in document["songs"][:2]
     ]
     response_path = tmp_path / "suggestions.json"
     response_path.write_text(json.dumps(response))
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(response_path), ""))
 
+    results = []
+
     def approve(dialog):
+        dialog.show()
         assert not dialog.approved_indices()
+        dialog.table.sortItems(1, Qt.SortOrder.DescendingOrder)
+        dialog.confidence.setCurrentIndex(dialog.confidence.findData("high"))
+        dialog.category.setCurrentIndex(dialog.category.findData("Evening"))
+        dialog.search.setText("review example")
+        dialog.table.horizontalHeader().moveSection(0, 6)
+        first_index = dialog.row(0)["index"]
+        dialog.table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        dialog.apply_button.click()
+        assert dialog.isVisible() and not dialog.busy
+        results.append(dialog.last_details["result"])
+        assert results[0]["approved_indices"] == [first_index]
+        assert dialog.table.rowCount() == 1
+        assert not dialog.approved_indices()
+        assert dialog.new_table.rowCount() == 0
+        assert not dialog.row(0)["new"]
+        assert dialog.category.currentData() == "Evening"
+        assert dialog.confidence.currentData() == "high"
+        assert dialog.search.text() == "review example"
+        assert dialog.table.horizontalHeader().visualIndex(0) == 6
+        assert dialog.table.horizontalHeader().sortIndicatorSection() == 1
+        assert dialog.table.horizontalHeader().sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
         dialog.set_approvals(True)
-        return QDialog.DialogCode.Accepted
+        dialog.apply_button.click()
+        results.append(dialog.last_details["result"])
+        assert dialog.isVisible() and not dialog.busy
+        assert dialog.table.rowCount() == 0 and not dialog.apply_button.isEnabled()
+        assert dialog.category.count() == 1
+        assert "No suggestions remain" in dialog.status.text()
+        dialog.box.button(dialog.box.StandardButton.Close).click()
+        assert not dialog.isVisible()
+        return dialog.result()
 
     monkeypatch.setattr(CategorySuggestionsDialog, "exec", approve)
-    results = []
-    monkeypatch.setattr(window, "category_suggestions_complete", results.append)
     next(a for a in menu.actions() if a.text() == "Import category suggestions…").trigger()
     assert results[0]["added"] == 1
     assert results[0]["created_categories"] == ["Evening"]
-    assert len(library.songs("untagged")) == 2
+    assert results[1]["added"] == 1 and not results[1]["created_categories"]
+    assert results[1]["approved_indices"] != results[0]["approved_indices"]
+    assert len(library.songs("untagged")) == 1
+    window.close()
+
+
+def test_suggestion_batch_blocks_duplicate_apply_and_close_and_recovers_after_failure(
+    qapp, library, exported
+):
+    calls = []
+    dialog = CategorySuggestionsDialog(
+        preview(library, exported["response"]),
+        on_apply=lambda indices: calls.append(indices),
+        on_refresh=lambda: calls.append("rescan"),
+    )
+    dialog.show()
+    dialog.set_approvals(True)
+    dialog.apply_button.click()
+    assert dialog.busy and not dialog.apply_button.isEnabled()
+    assert not dialog.table.isEnabled() and not dialog.refresh_button.isEnabled()
+    dialog.apply()
+    dialog.refresh()
+    dialog.reject()
+    dialog.accept()
+    dialog.close()
+    assert dialog.isVisible() and len(calls) == 1
+    dialog.fail_action("Test reload failure after a saved batch")
+    assert dialog.isVisible() and not dialog.busy
+    assert not dialog.approved_indices() and dialog.table.rowCount() == 0
+    assert not dialog.apply_button.isEnabled() and dialog.details_button.isEnabled()
+    dialog.refresh_button.click()
+    assert calls[-1] == "rescan" and dialog.busy
+    dialog.complete_action({"review": preview(library, exported["response"]), "result": None})
+    assert dialog.table.rowCount() == 3
+    assert not dialog.busy and not dialog.approved_indices()
+    dialog.close()
+
+
+def test_partial_batch_refresh_keeps_invalid_rows_and_other_suggestions_reviewable(qapp, library, exported):
+    dialog = CategorySuggestionsDialog(
+        preview(library, exported["response"]), on_apply=lambda indices: None, on_refresh=lambda: None
+    )
+    library.path(exported["songs"][1]).unlink()
+    result = apply_review(library, dialog.review, [1, 2])
+    assert result["added"] == 1 and len(result["errors"]) == 1
+    dialog.complete_action(
+        {
+            "result": result,
+            "review": preview(library, exported["response"], scan_errors=result["scan_errors"]),
+        }
+    )
+    assert {dialog.row(i)["index"] for i in range(dialog.table.rowCount())} == {1, 3}
+    assert "Errors: 1" in dialog.status.text()
+    dialog.set_approvals(True)
+    assert dialog.approved_indices() == [3]
+
+
+class ReviewPlayback(QObject):
+    track_changed = Signal(object)
+    position_changed = Signal(int, int)
+    state_changed = Signal(str)
+    error = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.queue = []
+        self._stopped = True
+        self.calls = []
+
+    def toggle_pause(self):
+        self.calls.append("pause")
+        self.state_changed.emit("Paused")
+
+    def stop(self):
+        self.calls.append("stop")
+        self._stopped = True
+        self.state_changed.emit("Stopped")
+        self.position_changed.emit(0, 0)
+
+    def seek(self, position):
+        self.calls.append(position)
+
+
+def test_suggestion_playback_follows_sorted_row_without_approving_and_has_transport(qapp, library, exported):
+    player = ReviewPlayback()
+
+    def play(song_id):
+        song = library.song(song_id)
+        player.queue = [song]
+        player._stopped = False
+        player.track_changed.emit(song)
+
+    dialog = CategorySuggestionsDialog(
+        preview(library, exported["response"]),
+        on_apply=lambda indices: None,
+        on_refresh=lambda: None,
+        on_play=play,
+        playback=player,
+    )
+    dialog.show()
+    assert not dialog.play_button.isEnabled()
+    dialog.table.sortItems(1, Qt.SortOrder.DescendingOrder)
+    dialog.table.setCurrentCell(0, 1)
+    song_id = dialog.row(0)["song_id"]
+    assert dialog.play_button.isEnabled()
+    dialog.play_button.click()
+    assert [s["id"] for s in player.queue] == [song_id]
+    assert dialog.isVisible() and not dialog.approved_indices()
+    player.position_changed.emit(65000, 180000)
+    assert dialog.position.text() == "1:05 / 3:00"
+    assert dialog.seek.value() == 65000 and dialog.seek.isEnabled()
+    dialog.seek.setValue(90000)
+    dialog.seek.sliderReleased.emit()
+    dialog.pause_button.click()
+    assert player.calls == [90000, "pause"]
+    dialog.set_busy(True)
+    assert not dialog.play_button.isEnabled() and dialog.stop_button.isEnabled()
+    dialog.stop_button.click()
+    assert player.calls[-1] == "stop" and not dialog.pause_button.isEnabled()
+    dialog.set_busy(False)
+    dialog.search.setText("nothing matches")
+    assert not dialog.play_button.isEnabled()
+    dialog.search.clear()
+    dialog.table.cellDoubleClicked.emit(0, 1)
+    assert not player._stopped and not dialog.approved_indices()
+    dialog.close()
+
+
+def test_import_audition_queues_only_reviewed_song_and_handles_missing_file(
+    qapp, library, exported, tmp_path, monkeypatch
+):
+    window = MainWindow(restore=False, enable_audio=False)
+    window.open_library(library.root, scan=False)
+    player = ReviewPlayback()
+    window.playback = player
+    path = tmp_path / "suggestions.json"
+    path.write_text(json.dumps(exported["response"]))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(path), ""))
+    monkeypatch.setattr(
+        window,
+        "run_job",
+        lambda operation, completed, **kwargs: completed(operation(window.library, lambda _: None)),
+    )
+    played = []
+    monkeypatch.setattr(window, "start_playback", lambda songs: played.append([s["id"] for s in songs]))
+
+    def review(dialog):
+        dialog.table.setCurrentCell(0, 1)
+        song_id = dialog.row(0)["song_id"]
+        dialog.play_button.click()
+        assert played == [[song_id]]
+        library.path(library.song(song_id)).unlink()
+        dialog.play_button.click()
+        assert len(played) == 1
+        assert "unavailable" in dialog.player_status.text()
+        assert not dialog.approved_indices()
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(CategorySuggestionsDialog, "exec", review)
+    window.import_category_suggestions()
+    window.playback = None
     window.close()

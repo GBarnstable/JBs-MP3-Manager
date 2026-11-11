@@ -824,36 +824,44 @@ class MainWindow(QMainWindow):
             return preview_category_suggestions(library, document, scan_errors=scan["errors"])
 
         def loaded(review):
-            dialog = CategorySuggestionsDialog(review, self)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            approved = dialog.approved_indices()
-            if approved:
+            def launch(approved=None):
+                current_review = dialog.review
+
+                def operate(library, progress):
+                    if approved is not None:
+                        result = apply_category_suggestions(library, current_review, approved, progress)
+                        errors = result["scan_errors"]
+                    else:
+                        result = None
+                        errors = library.scan(progress=progress)["errors"]
+                    return {
+                        "result": result,
+                        "review": preview_category_suggestions(
+                            library, current_review["document"], scan_errors=errors
+                        ),
+                    }
+
                 self.run_job(
-                    lambda lib, progress: apply_category_suggestions(lib, review, approved, progress),
-                    self.category_suggestions_complete,
+                    operate,
+                    dialog.complete_action,
+                    failed=dialog.fail_action,
                 )
+                if self.worker:
+                    self.worker.signals.progress.connect(dialog.show_progress)
+
+            def play(song_id):
+                song = self.library.song(song_id)
+                if not song or song["missing"] or not self.library.path(song).is_file():
+                    raise ValueError("The song file is unavailable. Restore it and rescan.")
+                self.start_playback([song])
+
+            dialog = CategorySuggestionsDialog(
+                review, self, on_apply=launch, on_refresh=launch, on_play=play, playback=self.playback
+            )
+            dialog.exec()
+            dialog.deleteLater()
 
         self.run_job(prepare, loaded)
-
-    def category_suggestions_complete(self, result):
-        box = QMessageBox(self)
-        box.setWindowTitle("Category suggestions applied")
-        box.setText(
-            f"Song/category memberships added: {result['added']}\nNew categories created: {len(result['created_categories'])}"
-        )
-        text = (
-            "Created: " + ", ".join(result["created_categories"])
-            if result["created_categories"]
-            else "Additions were made to existing categories."
-        )
-        text += f"\nSkipped: {len(result['skipped'])} · Errors: {len(result['errors'])}"
-        text += f"\n\nSaved report: {result.get('report_path', '')}\nDatabase backup: {result.get('database_backup', '')}"
-        if result["warnings"]:
-            text += "\n" + "\n".join(result["warnings"])
-        box.setInformativeText(text)
-        box.setDetailedText(json.dumps(result, ensure_ascii=False, indent=2))
-        box.exec()
 
     def review_discrepancies(self, checked=False, *, song_ids=None):
         if not self.library or self.busy:
