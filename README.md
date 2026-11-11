@@ -2,7 +2,7 @@
 
 A local Windows desktop application for one master MP3 folder and any number of virtual categories. A song can belong to several categories without making extra copies.
 
-**Version 0.5.2** adds the automatic **Review after AI tag** category. Applying an AI category suggestion to a song without personally confirmed categories also places it in this review queue. Earlier AI assignments do not count as manual categorization. Songs you have already categorized receive only the suggested category; existing review flags stay until you remove them. Removing the review category confirms that song’s remaining categories as reviewed. The persistent suggestion screen, audition controls, 15-minute scans, and previous library tools remain available. Existing libraries and suggestion files work directly. See [QUICK_START.md](QUICK_START.md).
+**Version 0.5.3** adds **Delete…** to the song list’s right-click menu in Untagged. Right-click a song to delete that song, or right-click within a highlighted group for **Delete selected songs…**. An unselected song becomes the sole target; clicking a selected song retains the highlighted group. The existing file-list confirmation and Windows Recycle Bin operation are used, with backups and fresh eligibility checks. Blank space and ineligible views do not offer deletion. Existing library and AI-review workflows remain supported. See [QUICK_START.md](QUICK_START.md).
 
 ## Included
 
@@ -40,9 +40,9 @@ A local Windows desktop application for one master MP3 folder and any number of 
 
 ## Windows download
 
-Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.5.2-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
+Open the repository's **Actions** tab, select a successful **Check and build Windows app** run for the implementation branch, and download its **JBs-MP3-Manager-0.5.3-Windows** artifact. Extract the download and open `JBs-MP3-Manager.exe`. Keep its `_internal` folder beside the EXE. Close the old application before opening the new version; there is no need to recreate your library or reimport categories.
 
-If you already have the portable 0.3 application, the **0.5.2-UPDATE-from-0.3** artifact is a smaller alternative: close the app and merge all update files into the existing 0.3 application folder, accepting file replacements. Keep the original `_internal` folder and merge its new contents. This update cannot run on its own. The workflow verifies the update over the original 0.3 package, including startup, VLC, and the fingerprint tool.
+If you already have the portable 0.3 application, the **0.5.3-UPDATE-from-0.3** artifact is a smaller alternative: close the app and merge all update files into the existing 0.3 application folder, accepting file replacements. Keep the original `_internal` folder and merge its new contents. This update cannot run on its own. The workflow verifies the update over the original 0.3 package, including startup, VLC, and the fingerprint tool.
 
 The CI package includes the 64-bit VLC runtime, so Python and a separate VLC installation are not needed. The application is unsigned; Windows may show its normal unknown-publisher prompt. Windows 10/11, 64-bit, is the target. Automated build/decoding checks cannot replace listening and migration tests on your own computer.
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import (
     QAbstractTableModel,
     QFileSystemWatcher,
+    QItemSelectionModel,
     QLockFile,
     QModelIndex,
     QObject,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -342,6 +344,8 @@ class MainWindow(QMainWindow):
             self.table.setColumnWidth(column, width)
         self.table.doubleClicked.connect(self.play_category)
         self.table.selectionModel().selectionChanged.connect(self.selection_changed)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.song_context_menu)
         body.addWidget(self.table)
         self.detail = QLabel("Select a song to inspect its metadata. Double-click to play the visible list.")
         self.detail.setWordWrap(True)
@@ -643,6 +647,27 @@ class MainWindow(QMainWindow):
             self.model.rows[self.proxy.mapToSource(self.proxy.index(row, 0)).row()]
             for row in range(self.proxy.rowCount())
         ]
+
+    def song_context_menu(self, position):
+        if not self.library or self.busy or self.current_category != "untagged":
+            return
+        index = self.table.indexAt(position)
+        if not index.isValid():
+            return
+        selection = self.table.selectionModel()
+        flags = (
+            QItemSelectionModel.SelectionFlag.NoUpdate
+            if selection.isRowSelected(index.row(), QModelIndex())
+            else QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows
+        )
+        selection.setCurrentIndex(index, flags)
+        songs = self.selected_songs()
+        menu = QMenu(self.table)
+        delete = menu.addAction("Delete…" if len(songs) == 1 else "Delete selected songs…")
+        delete.setToolTip("Move the selected Untagged MP3 files to the Recycle Bin after confirmation.")
+        delete.triggered.connect(lambda: self.delete_untagged_files(songs=songs))
+        menu.exec(self.table.viewport().mapToGlobal(position))
+        menu.deleteLater()
 
     def selection_changed(self, *_):
         selected = self.selected_songs()
@@ -1355,13 +1380,13 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.recycle_approved_files(dialog.selected_songs())
 
-    def delete_untagged_files(self):
+    def delete_untagged_files(self, *, songs=None):
         if not self.library or self.busy:
             return
         if self.current_category != "untagged":
             self.choose_untagged_deletion()
             return
-        songs = self.selected_songs()
+        songs = self.selected_songs() if songs is None else songs
         if not songs:
             self.choose_untagged_deletion()
             return
