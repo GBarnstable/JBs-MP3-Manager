@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import uuid
 from collections import defaultdict
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -614,6 +615,6 @@ class Library:
             raise ValueError("Use a .sqlite3, .sqlite, or .db backup filename.")
         if destination == self.data / "library.sqlite3":
             raise ValueError("Choose a different backup filename.")
-        with sqlite3.connect(destination) as target:
+        with closing(sqlite3.connect(destination)) as target:
             self.db.backup(target)
         return destination

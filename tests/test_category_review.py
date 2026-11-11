@@ -646,3 +646,28 @@ def test_export_distinguishes_ai_and_manual_categories_after_reopening(library, 
     assert exported["jazz"] in song["ai_category_ids"]
     manual = next(s for s in document["songs"] if s["song_id"] == exported["songs"][0]["id"])
     assert manual["manually_categorized"] and not manual["ai_category_ids"]
+
+
+def test_backup_closes_its_connection_before_returning(library, tmp_path, monkeypatch):
+    opened = []
+    connect = sqlite3.connect
+
+    def record_connection(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr("jbs_mp3_manager.library.sqlite3.connect", record_connection)
+    destination = tmp_path / "library-backup.sqlite3"
+    library.backup(destination)
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
+    # The produced snapshot is still complete and can be moved immediately.
+    moved = destination.with_name("moved-backup.sqlite3")
+    destination.rename(moved)
+    connection = connect(moved)
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM songs").fetchone()[0] == 3
+    finally:
+        connection.close()
