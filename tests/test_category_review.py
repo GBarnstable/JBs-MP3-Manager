@@ -8,6 +8,12 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QDialog, QFileDialog, QInputDialog, QMessageBox
 
 from jbs_mp3_manager.app import MainWindow
+from jbs_mp3_manager.category_origins import (
+    REVIEW_CATEGORY,
+    initialize,
+    manually_categorized,
+    merge_memberships,
+)
 from jbs_mp3_manager.category_review import apply_review, export_review, preview, read_json
 from jbs_mp3_manager.category_review_dialog import CategorySuggestionsDialog
 from jbs_mp3_manager.library import Library
@@ -82,9 +88,12 @@ def test_approved_additions_create_only_needed_categories_and_preserve_music(lib
     assert [r["status"] for r in review["rows"]] == ["Already assigned", "Ready", "Ready", "Ready"]
     result = apply_review(library, review, [1, 2])
     assert result["added"] == 2
-    assert result["created_categories"] == ["Evening"]
+    assert set(result["created_categories"]) == {"Evening", REVIEW_CATEGORY}
     assert not result["errors"]
-    assert {c["name"] for c in library.categories()} == {"Jazz", "Evening"}
+    assert {c["name"] for c in library.categories()} == {"Jazz", "Evening", REVIEW_CATEGORY}
+    assert set(result["review_flagged"]) == {s["id"] for s in exported["songs"][1:]}
+    flag = next(c["id"] for c in library.categories() if c["name"] == REVIEW_CATEGORY)
+    assert {s["id"] for s in library.songs(flag)} == set(result["review_flagged"])
     assert {s["id"] for s in library.songs(exported["jazz"])} == {s["id"] for s in exported["songs"][:2]}
     assert not library.songs("untagged")
     assert {s["id"]: digest_range(library.path(s)) for s in library.songs()} == original_hashes
@@ -254,7 +263,8 @@ def test_preview_approvals_filters_and_reordered_columns_keep_original_indices(q
     dialog.confidence.setCurrentIndex(dialog.confidence.findData("high"))
     dialog.set_approvals(True)
     assert dialog.approved_indices() == [2]
-    assert "1 new categories" in dialog.summary.text()
+    assert "2 new categories" in dialog.summary.text()
+    assert "1 songs for Review after AI tag" in dialog.summary.text()
     dialog.search.setText("Nothing matches")
     assert "1 hidden" in dialog.summary.text()
     dialog.set_approvals(False, all_rows=True)
@@ -342,7 +352,7 @@ def test_export_and_import_menu_round_trip_and_fifteen_minute_rescan(qapp, libra
     monkeypatch.setattr(CategorySuggestionsDialog, "exec", approve)
     next(a for a in menu.actions() if a.text() == "Import category suggestions…").trigger()
     assert results[0]["added"] == 1
-    assert results[0]["created_categories"] == ["Evening"]
+    assert set(results[0]["created_categories"]) == {"Evening", REVIEW_CATEGORY}
     assert results[1]["added"] == 1 and not results[1]["created_categories"]
     assert results[1]["approved_indices"] != results[0]["approved_indices"]
     assert len(library.songs("untagged")) == 1
@@ -505,3 +515,134 @@ def test_import_audition_queues_only_reviewed_song_and_handles_missing_file(
     window.import_category_suggestions()
     window.playback = None
     window.close()
+
+
+def more_suggestions(exported, song_id, *categories):
+    document = copy.deepcopy(exported["response"])
+    document["new_categories"] = [{"name": name, "description": "Test category"} for name in categories]
+    document["suggestions"] = [
+        {"song_id": song_id, "category": name, "confidence": "high", "reason": "Test recommendation"}
+        for name in categories
+    ]
+    return document
+
+
+def test_manual_songs_get_only_suggestion_while_untagged_and_ai_only_songs_get_review_flag(library, exported):
+    review = preview(library, exported["response"])
+    assert [r["review_after_ai"] for r in review["rows"]] == [False, True, True, False]
+    result = apply_review(library, review, [1, 3])
+    assert result["added"] == 2
+    sid = exported["songs"][1]["id"]
+    assert result["review_flagged"] == [sid]
+    assert manually_categorized(library) == {exported["songs"][0]["id"]}
+    next_document = more_suggestions(exported, sid, "Another AI category")
+    next_review = preview(library, next_document)
+    assert next_review["rows"][0]["review_after_ai"]
+    result = apply_review(library, next_review, [0])
+    assert result["added"] == 1 and not result["review_flagged"]
+    assert (
+        library.db.execute("SELECT COUNT(*) FROM ai_memberships WHERE song_id=?", (sid,)).fetchone()[0] == 3
+    )
+
+
+def test_multiple_ai_tags_in_one_batch_flag_once_and_user_confirmation_is_retained(library, exported):
+    sid = exported["songs"][1]["id"]
+    document = more_suggestions(exported, sid, "AI Rock", "AI Pop")
+    result = apply_review(library, preview(library, document), [0, 1])
+    assert result["added"] == 2 and result["review_flagged"] == [sid]
+    flag = next(c["id"] for c in library.categories() if c["name"] == REVIEW_CATEGORY)
+    # Merely accepting another AI suggestion has not completed the personal review.
+    assert sid not in manually_categorized(library)
+    library.assign([sid], [flag], remove=True)
+    assert sid in manually_categorized(library)
+    followup = more_suggestions(exported, sid, "AI Dance")
+    review = preview(library, followup)
+    assert not review["rows"][0]["review_after_ai"]
+    assert not apply_review(library, review, [0])["review_flagged"]
+    assert not library.songs(flag)
+
+
+def test_manual_assignment_promotes_ai_tag_but_does_not_remove_pending_review(library, exported):
+    sid = exported["songs"][1]["id"]
+    apply_review(library, preview(library, exported["response"]), [1])
+    library.assign([sid], [exported["jazz"]])  # Explicitly reaffirm the same category in Categorize.
+    assert sid in manually_categorized(library)
+    flag = next(c["id"] for c in library.categories() if c["name"] == REVIEW_CATEGORY)
+    another = more_suggestions(exported, sid, "Another AI category")
+    result = apply_review(library, preview(library, another), [0])
+    assert not result["review_flagged"]
+    assert {s["id"] for s in library.songs(flag)} == {sid}
+
+
+def test_earlier_applied_reports_restore_ai_origins_once_without_reclassifying_manual_choices(
+    library, exported
+):
+    sid = exported["songs"][1]["id"]
+    result = apply_review(library, preview(library, exported["response"]), [1, 3])
+    # Simulate a pre-0.5.2 library: memberships and saved reports, without provenance.
+    with library.db:
+        library.db.execute("DELETE FROM ai_memberships")
+        library.db.execute("DELETE FROM settings WHERE key='category_origins_initialized'")
+    initialize(library)
+    assert sid not in manually_categorized(library)
+    assert exported["songs"][0]["id"] in manually_categorized(library)
+    library.assign([sid], [exported["jazz"]])
+    initialize(library)
+    assert sid in manually_categorized(library)
+    assert read_json(result["report_path"])["state"] == "applied"
+
+
+def test_review_flag_and_origin_changes_rollback_together_on_failure(library, exported):
+    library.db.execute(
+        "CREATE TRIGGER block_review BEFORE INSERT ON memberships "
+        "WHEN NEW.category_id IN (SELECT id FROM categories WHERE name='Review after AI tag') "
+        "BEGIN SELECT RAISE(ABORT,'Review flag failure'); END"
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="Review flag failure"):
+        apply_review(library, preview(library, exported["response"]), [1])
+    assert {c["name"] for c in library.categories()} == {"Jazz"}
+    assert library.db.execute("SELECT COUNT(*) FROM ai_memberships").fetchone()[0] == 0
+    assert len(library.songs(exported["jazz"])) == 1
+
+
+def test_invalid_or_skipped_recommendations_do_not_create_flags_and_marker_is_not_a_recommendation(
+    library, exported
+):
+    result = apply_review(library, preview(library, exported["response"]), [0])
+    assert not result["review_flagged"] and not result["created_categories"]
+    doc = more_suggestions(exported, exported["songs"][1]["id"], REVIEW_CATEGORY)
+    review = preview(library, doc)
+    assert review["rows"][0]["status"] == "Invalid"
+    assert "automatically" in review["rows"][0]["error"]
+    assert not apply_review(library, review, [0])["review_flagged"]
+
+
+def test_merge_preserves_ai_origins_and_manual_membership_wins(library, exported):
+    first, second = [s["id"] for s in exported["songs"][1:]]
+    doc = more_suggestions(exported, first, "AI Rock")
+    apply_review(library, preview(library, doc), [0])
+    category = next(c["id"] for c in library.categories() if c["name"] == "AI Rock")
+    with library.db:
+        merge_memberships(library, second, [first])
+    assert second not in manually_categorized(library)
+    assert (second, category) in {tuple(r) for r in library.db.execute("SELECT * FROM ai_memberships")}
+    library.assign([second], [category])
+    with library.db:
+        merge_memberships(library, first, [second])
+    assert first in manually_categorized(library)
+    assert (first, category) not in {tuple(r) for r in library.db.execute("SELECT * FROM ai_memberships")}
+
+
+def test_export_distinguishes_ai_and_manual_categories_after_reopening(library, exported, tmp_path):
+    sid = exported["songs"][1]["id"]
+    apply_review(library, preview(library, exported["response"]), [1])
+    with Library(library.root) as reopened:
+        assert sid not in manually_categorized(reopened)
+        path = tmp_path / "followup-export.json"
+        export_review(reopened, path)
+        document = read_json(path)
+    song = next(s for s in document["songs"] if s["song_id"] == sid)
+    assert not song["untagged"] and not song["manually_categorized"]
+    assert exported["jazz"] in song["ai_category_ids"]
+    manual = next(s for s in document["songs"] if s["song_id"] == exported["songs"][0]["id"])
+    assert manual["manually_categorized"] and not manual["ai_category_ids"]

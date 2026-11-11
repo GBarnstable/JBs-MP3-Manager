@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from mutagen.id3 import ID3, ID3NoHeaderError
 
+from .category_origins import merge_memberships
 from .duplicates import _archive_path, _original_path
 from .library import atomic_text
 from .media import digest_range, inspect_mp3
@@ -334,10 +335,7 @@ def replace_recording(
 
     def mutate():
         library._store(current_id, current["path"], info)
-        library.db.execute(
-            "INSERT OR IGNORE INTO memberships SELECT ?, category_id FROM memberships WHERE song_id=?",
-            (current_id, incoming_id),
-        )
+        merge_memberships(library, current_id, [incoming_id])
         library.db.execute(
             "UPDATE import_resolutions SET song_id=?, keeper_path=? WHERE song_id=?",
             (current_id, current["path"], incoming_id),
@@ -363,10 +361,7 @@ def delete_incoming(
     def mutate():
         if digest_range(_original_path(library, keeper["path"])) != expected_keeper:
             raise ValueError("The kept recording changed during review; the incoming file was retained.")
-        library.db.execute(
-            "INSERT OR IGNORE INTO memberships SELECT ?, category_id FROM memberships WHERE song_id=?",
-            (keeper_id, incoming_id),
-        )
+        merge_memberships(library, keeper_id, [incoming_id])
         library.db.execute(
             "UPDATE import_resolutions SET song_id=?, keeper_path=? WHERE song_id=?",
             (keeper_id, keeper["path"], incoming_id),

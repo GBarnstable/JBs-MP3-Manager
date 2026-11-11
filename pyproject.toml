@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jbs-mp3-manager"
-version = "0.5.1"
+version = "0.5.2"
 description = "A portable, local MP3 library with virtual categories"
 requires-python = ">=3.11"
 dependencies = ["PySide6>=6.8,<7", "mutagen>=1.47,<2", "python-vlc>=3.0.21203,<4"]

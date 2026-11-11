@@ -34,6 +34,16 @@
 
 Already-assigned and duplicate suggestions are skipped. Unknown IDs, missing/replaced recordings, invalid categories, and undeclared new category names cannot be approved. Categories renamed or deleted since export require a new review export. Artist/Title corrections since export are flagged for careful review. Targets are rechecked before applying; fresh changes may require reopening the suggestions. Unexpected database failures roll back the batch. Reimporting an applied recommendation does not create duplicate assignments.
 
+## Review after AI tag (0.5.2)
+
+When an approved recommendation adds a category to a song with no personally confirmed categories, the same transaction also assigns **Review after AI tag**, creating that category if necessary. This includes songs in Untagged and songs whose existing categories came only from earlier AI suggestions. A song with any personally assigned/confirmed category receives only the recommended addition. The review category itself does not count as personal categorization.
+
+Applying several suggestions to the same song adds only one review membership. Later AI approvals leave existing review flags in place. Invalid, skipped, already-assigned and failed recommendations do not create flags. Untagged continues to mean zero categories; use **Review after AI tag** in the sidebar to find AI-categorized songs that need more attention. The preview shows which rows also get the review category, its proposed creation, and the number of affected songs. Batch results report review flags separately from recommended memberships.
+
+When finished, use **Categorize → Remove** to remove **Review after AI tag** from the reviewed song(s). Explicitly removing this flag also confirms their current remaining categories, so future AI additions do not put them back into the review queue. Assigning or reaffirming a category through the normal Categorize tools also counts as your own choice; it does not automatically remove an existing review flag. Keep the review category’s name unchanged for this workflow.
+
+AI/manual origin records are portable library data and follow songs through renames, recording replacements and duplicate merges. Manual confirmation takes precedence when copies are merged. At upgrade, the app recovers known earlier AI assignments from saved completed category-suggestion reports, without changing existing memberships. Older versions did not record manual reaffirmations, and missing/incomplete historical reports cannot prove an assignment’s origin; retain the portable data folder and reports. New assignments and confirmations are tracked directly. Existing suggestion JSON files remain valid; future library exports include AI-origin category IDs and whether a song has personally confirmed categories. The review category is a follow-up queue, not a recommended musical category.
+
 Song IDs and saved review snapshots live in `.jbs-mp3-manager`, so renaming songs or moving/mirroring the complete library between D: and C: preserves the exchange. Keep this hidden folder with the MP3s. Backups contain category data, not copies of MP3 audio.
 
 ## Returned suggestions format
@@ -130,9 +140,9 @@ Opening the mirrored folder directly also works if you later need to restore it.
 
 # Updating from an earlier version
 
-Close the old app, extract the complete **0.5.1-Windows** download into a new application folder, and launch its EXE. It preserves existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. You do not need to recreate the library or import categories again. Keep the whole `_internal` folder with the new EXE.
+Close the old app, extract the complete **0.5.2-Windows** download into a new application folder, and launch its EXE. It preserves existing songs and categories and normally opens your last library automatically. If needed, choose **Open library** and select the existing master music folder. You do not need to recreate the library or import categories again. Keep the whole `_internal` folder with the new EXE.
 
-If you already have **version 0.3**, the much smaller **0.5.1-UPDATE-from-0.3** download can be merged directly into your existing application folder. Close the app first, copy all update contents beside the existing EXE, accept file replacements, and merge the `_internal` contents with the existing `_internal` folder. The update is not a standalone application and must not be extracted into your music library. It is tested over the original 0.3 package before download is offered.
+If you already have **version 0.3**, the much smaller **0.5.2-UPDATE-from-0.3** download can be merged directly into your existing application folder. Close the app first, copy all update contents beside the existing EXE, accept file replacements, and merge the `_internal` contents with the existing `_internal` folder. The update is not a standalone application and must not be extracted into your music library. It is tested over the original 0.3 package before download is offered.
 
 If Windows SmartScreen appears for this unsigned new build, click **More info** to reveal **Run anyway** when you intend to run your downloaded build.
 

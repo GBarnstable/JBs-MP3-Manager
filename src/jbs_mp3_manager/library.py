@@ -14,6 +14,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .category_origins import REVIEW_CATEGORY
+from .category_origins import initialize as initialize_category_origins
 from .exports import EXPORT_DIR
 from .media import FIELDS, audio_properties, inspect_mp3, write_tags
 
@@ -99,6 +101,11 @@ class Library:
                 category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
                 PRIMARY KEY (song_id, category_id)
             );
+            CREATE TABLE IF NOT EXISTS ai_memberships (
+                song_id TEXT NOT NULL, category_id INTEGER NOT NULL,
+                PRIMARY KEY (song_id, category_id),
+                FOREIGN KEY (song_id, category_id) REFERENCES memberships(song_id, category_id) ON DELETE CASCADE
+            );
             CREATE INDEX IF NOT EXISTS song_audio ON songs(audio_sha256);
             CREATE TABLE IF NOT EXISTS import_resolutions (
                 report_hash TEXT NOT NULL, entry_index INTEGER NOT NULL,
@@ -134,6 +141,7 @@ class Library:
             self.db.execute(
                 "INSERT OR IGNORE INTO settings VALUES ('recursive', ?)", (json.dumps(recursive),)
             )
+        initialize_category_origins(self)
 
     def __enter__(self):
         return self
@@ -238,7 +246,22 @@ class Library:
             else "INSERT OR IGNORE INTO memberships(song_id, category_id) VALUES (?, ?)"
         )
         with self.db:
-            self.db.executemany(sql, [(s, c) for s in song_ids for c in category_ids])
+            pairs = [(s, c) for s in song_ids for c in category_ids]
+            reviewed = {
+                s
+                for s, c in pairs
+                if remove
+                and self.db.execute(
+                    "SELECT 1 FROM memberships m JOIN categories c ON c.id=m.category_id "
+                    "WHERE m.song_id=? AND m.category_id=? AND c.name=? COLLATE NOCASE",
+                    (s, c, REVIEW_CATEGORY),
+                ).fetchone()
+            }
+            self.db.executemany(sql, pairs)
+            if not remove:
+                self.db.executemany("DELETE FROM ai_memberships WHERE song_id=? AND category_id=?", pairs)
+            # Explicitly removing the review flag confirms the remaining tags.
+            self.db.executemany("DELETE FROM ai_memberships WHERE song_id=?", [(s,) for s in reviewed])
 
     def _store(self, song_id: str, relative: str, info: dict):
         columns = ["id", "path", *FIELDS, "duration", "sha256", "audio_sha256", "size", "mtime_ns", "missing"]
@@ -436,6 +459,10 @@ class Library:
                 ).fetchone()[0]
                 self.db.execute(
                     "INSERT OR IGNORE INTO memberships VALUES (?, ?)", (entry["song_id"], category_id)
+                )
+                self.db.execute(
+                    "DELETE FROM ai_memberships WHERE song_id=? AND category_id=?",
+                    (entry["song_id"], category_id),
                 )
         unresolved = [e for e in report["entries"] if e["status"] not in ("exact", "audio")]
         report.update(

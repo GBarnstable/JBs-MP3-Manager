@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .category_origins import REVIEW_CATEGORY
 from .table_columns import configure_columns
 
 
@@ -40,6 +41,8 @@ class CategorySuggestionsDialog(QDialog):
             "Review each recommendation and its confidence/reason, then approve the additions you want. "
             "Existing memberships are kept. New categories are created only when an approved song assignment "
             "needs them. MP3 files, filenames and metadata are unchanged. The category database is backed up."
+            " Songs without categories confirmed by you also get 'Review after AI tag'. "
+            "Remove that review category when finished to confirm their current categories."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -67,6 +70,7 @@ class CategorySuggestionsDialog(QDialog):
         filters.addWidget(self.search, 1)
         layout.addLayout(filters)
         self.summary = QLabel()
+        self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
         self.tabs = QTabWidget()
         page = QWidget()
@@ -212,6 +216,8 @@ class CategorySuggestionsDialog(QDialog):
             self.table.setItem(position, 0, check)
             song = f"{row['artist']}--{row['title']}" if row["title"] else row["path"] or row["song_id"]
             status = row["error"] or row["status"]
+            if row["status"] == "Ready" and row.get("review_after_ai"):
+                status += "; also add " + REVIEW_CATEGORY
             if row["warning"]:
                 status += "; " + row["warning"]
             for column, value in enumerate(
@@ -231,6 +237,8 @@ class CategorySuggestionsDialog(QDialog):
         self.table.setSortingEnabled(True)
         self.table.blockSignals(False)
         needed = {row["category"] for row in rows if row["new"]}
+        if any(row["status"] == "Ready" and row.get("review_after_ai") for row in rows):
+            needed.add(REVIEW_CATEGORY)
         categories = [c for c in review["new_categories"] if c["name"] in needed]
         self.new_table.blockSignals(True)
         self.new_table.setRowCount(0)
@@ -259,6 +267,13 @@ class CategorySuggestionsDialog(QDialog):
 
     def update_summary(self, *_):
         approved = {self.by_index[i]["category"] for i in self.approved_indices() if self.by_index[i]["new"]}
+        followup = {
+            self.by_index[i]["song_id"]
+            for i in self.approved_indices()
+            if self.by_index[i].get("review_after_ai")
+        }
+        if followup and any(c["name"] == REVIEW_CATEGORY for c in self.review["new_categories"]):
+            approved.add(REVIEW_CATEGORY)
         hidden = sum(
             self.table.isRowHidden(i) and self.table.item(i, 0).checkState() == Qt.CheckState.Checked
             for i in range(self.table.rowCount())
@@ -267,11 +282,13 @@ class CategorySuggestionsDialog(QDialog):
         count = len(self.approved_indices())
         self.summary.setText(
             f"{count} approved assignments ({hidden} hidden by filters) · {len(approved)} new categories to create · "
+            f"{len(followup)} songs for {REVIEW_CATEGORY} · "
             f"{statuses['Ready']} ready · {statuses['Already assigned']} already assigned · {statuses['Invalid']} invalid"
         )
         self.apply_button.setText(f"Apply {count} approved additions")
         self.apply_button.setEnabled(count > 0 and not self.busy)
         counts = Counter(self.by_index[i]["category"].casefold() for i in self.approved_indices())
+        counts[REVIEW_CATEGORY.casefold()] = len(followup)
         for index in range(self.new_table.rowCount()):
             name = self.new_table.item(index, 0).text()
             self.new_table.item(index, 2).setText(str(counts[name.casefold()]))
@@ -406,6 +423,7 @@ class CategorySuggestionsDialog(QDialog):
         result = context.get("result")
         text = (
             f"Added: {result['added']} · New categories: {len(result['created_categories'])} · "
+            f"Review flags added: {len(result.get('review_flagged', []))} · "
             f"Skipped: {len(result['skipped'])} · Errors: {len(result['errors'])}. "
             if result is not None
             else "Rescan complete. "

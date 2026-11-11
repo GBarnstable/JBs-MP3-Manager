@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .category_origins import merge_memberships
 from .library import atomic_text
 from .media import digest_range, inspect_mp3
 
@@ -271,18 +272,17 @@ def merge(
             if digest_range(_original_path(library, song["path"])) != infos[keeper]["sha256"]:
                 raise ValueError("The chosen keeper changed during the merge. Review the group again.")
             library._store(keeper, song["path"], infos[keeper])
-            for original in group["songs"]:
-                library.db.execute(
-                    "INSERT OR IGNORE INTO memberships(song_id, category_id) "
-                    "SELECT ?, category_id FROM memberships WHERE song_id=?",
-                    (keeper, original["id"]),
-                )
+            merge_memberships(library, keeper, [s["id"] for s in group["songs"]])
             for name in group["categories"]:
                 library.db.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (name,))
                 category_id = library.db.execute(
                     "SELECT id FROM categories WHERE name=? COLLATE NOCASE", (name,)
                 ).fetchone()[0]
                 library.db.execute("INSERT OR IGNORE INTO memberships VALUES (?, ?)", (keeper, category_id))
+                if any(e["category"].casefold() == name.casefold() for e in group["pending_entries"]):
+                    library.db.execute(
+                        "DELETE FROM ai_memberships WHERE song_id=? AND category_id=?", (keeper, category_id)
+                    )
             for old in group["songs"]:
                 if old["id"] != keeper:
                     library.db.execute(

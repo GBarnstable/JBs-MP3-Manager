@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .category_origins import REVIEW_CATEGORY, REVIEW_DESCRIPTION, manually_categorized
 from .library import Library, atomic_text
 
 REVIEW_FORMAT = "jbs-category-review"
@@ -47,6 +48,10 @@ def export_review(library, destination, goals="", progress=lambda message: None)
         library.set_setting("category_review_library_id", library_id)
     export_id = str(uuid.uuid4())
     memberships = {}
+    manual = manually_categorized(library)
+    ai = {}
+    for row in library.db.execute("SELECT song_id,category_id FROM ai_memberships"):
+        ai.setdefault(row["song_id"], []).append(row["category_id"])
     for row in library.db.execute("SELECT song_id,category_id FROM memberships ORDER BY category_id"):
         memberships.setdefault(row["song_id"], []).append(row["category_id"])
     descriptions = library.setting("category_review_descriptions", {})
@@ -84,6 +89,8 @@ def export_review(library, destination, goals="", progress=lambda message: None)
                 "category_ids": category_ids,
                 "categories": [names[i] for i in category_ids],
                 "untagged": not category_ids,
+                "manually_categorized": song["id"] in manual,
+                "ai_category_ids": ai.get(song["id"], []),
             }
         )
     template = {
@@ -113,6 +120,7 @@ def export_review(library, destination, goals="", progress=lambda message: None)
             "and reason. Declare new_categories as objects with name and description. "
             "Only additions are supported. Do not remove memberships, rename categories, change files "
             "or assign the virtual Untagged, All songs or Missing files categories."
+            " Review after AI tag is a follow-up queue, not a musical category; do not recommend it."
         ),
         "suggestions_template": template,
         "suggestion_entry_example": {
@@ -162,6 +170,7 @@ def preview(library, document, *, scan_errors=()):
     ):
         raise ValueError("Use lists of up to 50,000 suggestions and 5,000 new categories.")
     warnings, new_categories = [], {}
+    manual = manually_categorized(library)
     failed_paths = {error["path"] for error in scan_errors}
     if failed_paths:
         warnings.append(
@@ -201,11 +210,16 @@ def preview(library, document, *, scan_errors=()):
             "warning": "",
             "status": "Invalid",
             "error": "",
+            "review_after_ai": False,
         }
         try:
             if not isinstance(entry, dict) or entry.get("action", "add") != "add":
                 raise ValueError("Only song/category additions are supported.")
             song_id, category = entry.get("song_id"), _name(entry.get("category"))
+            if category.casefold() == REVIEW_CATEGORY.casefold():
+                raise ValueError(
+                    "Review after AI tag is added automatically when needed, not as a recommendation."
+                )
             row.update(song_id=song_id if isinstance(song_id, str) else "", category=category)
             confidence, reason = entry.get("confidence"), entry.get("reason")
             if not isinstance(confidence, str) or confidence.casefold() not in ("high", "medium", "low"):
@@ -217,6 +231,7 @@ def preview(library, document, *, scan_errors=()):
                 raise ValueError("Song ID is unknown or was not included in the original export.")
             song, original = songs[song_id], baseline[song_id]
             row.update(path=song["path"], artist=song["artist"], title=song["title"])
+            row["review_after_ai"] = song_id not in manual
             if song["path"] in failed_paths:
                 raise ValueError(
                     "File could not be verified during rescan; correct the file problem and rescan."
@@ -259,10 +274,17 @@ def preview(library, document, *, scan_errors=()):
         except (ValueError, TypeError, KeyError) as error:
             row["error"] = str(error)
         rows.append(row)
+    proposed = list(new_categories.values())
+    if (
+        REVIEW_CATEGORY.casefold() not in categories
+        and any(r["status"] == "Ready" and r["review_after_ai"] for r in rows)
+        and not any(c["name"].casefold() == REVIEW_CATEGORY.casefold() for c in proposed)
+    ):
+        proposed.append({"name": REVIEW_CATEGORY, "description": REVIEW_DESCRIPTION})
     return {
         "document": document,
         "rows": rows,
-        "new_categories": list(new_categories.values()),
+        "new_categories": proposed,
         "warnings": warnings,
     }
 
@@ -271,7 +293,14 @@ def apply_review(library, review, approved_indices, progress=lambda message: Non
     chosen = set(approved_indices)
     if any(type(i) is not int or i < 0 or i >= len(review["rows"]) for i in chosen):
         raise ValueError("Invalid approval selection. Reopen the suggestion file.")
-    result = {"added": 0, "created_categories": [], "skipped": [], "errors": [], "warnings": []}
+    result = {
+        "added": 0,
+        "created_categories": [],
+        "review_flagged": [],
+        "skipped": [],
+        "errors": [],
+        "warnings": [],
+    }
     if not chosen:
         return result
     # Refresh cached audio identities before making any category changes.
@@ -293,6 +322,7 @@ def apply_review(library, review, approved_indices, progress=lambda message: Non
     library.db.execute("BEGIN IMMEDIATE")
     try:
         fresh = preview(library, review["document"], scan_errors=scan["errors"])
+        manual = manually_categorized(library)
         result["warnings"].extend(fresh["warnings"])
         descriptions = library.setting("category_review_descriptions", {})
         declarations = {c["name"].casefold(): c for c in fresh["new_categories"]}
@@ -330,10 +360,33 @@ def apply_review(library, review, approved_indices, progress=lambda message: Non
                     descriptions[str(category_id)] = declarations[name.casefold()]["description"]
                     result["created_categories"].append(name)
                 category_id = created[name]
-            result["added"] += library.db.execute(
+            added = library.db.execute(
                 "INSERT OR IGNORE INTO memberships(song_id,category_id) VALUES (?, ?)",
                 (row["song_id"], category_id),
             ).rowcount
+            result["added"] += added
+            if added:
+                library.db.execute("INSERT INTO ai_memberships VALUES (?, ?)", (row["song_id"], category_id))
+            if added and row["song_id"] not in manual:
+                target = library.db.execute(
+                    "SELECT id FROM categories WHERE name=? COLLATE NOCASE", (REVIEW_CATEGORY,)
+                ).fetchone()
+                if target is None:
+                    review_id = library.db.execute(
+                        "INSERT INTO categories(name) VALUES (?)", (REVIEW_CATEGORY,)
+                    ).lastrowid
+                    result["created_categories"].append(REVIEW_CATEGORY)
+                    descriptions[str(review_id)] = REVIEW_DESCRIPTION
+                else:
+                    review_id = target[0]
+                flagged = library.db.execute(
+                    "INSERT OR IGNORE INTO memberships VALUES (?, ?)", (row["song_id"], review_id)
+                ).rowcount
+                if flagged:
+                    library.db.execute(
+                        "INSERT INTO ai_memberships VALUES (?, ?)", (row["song_id"], review_id)
+                    )
+                    result["review_flagged"].append(row["song_id"])
         library.db.execute(
             "INSERT OR REPLACE INTO settings(key,value) VALUES (?, ?)",
             ("category_review_descriptions", json.dumps(descriptions, ensure_ascii=False)),
